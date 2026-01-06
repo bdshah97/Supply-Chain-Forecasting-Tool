@@ -60,21 +60,38 @@ const callClaude = async (prompt: string, contents: string, isJson: boolean = fa
   
   const jsonInstruction = isJson ? " Respond ONLY with a raw JSON object. Do not include markdown or explanations." : "";
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01"
-    },
-    body: JSON.stringify({
-      model: "claude-3-5-sonnet-20240620",
-      max_tokens: 2048,
-      messages: [{ role: "user", content: `${prompt}${jsonInstruction}\n\nContext: ${contents}` }]
-    })
-  });
-  const data = await response.json();
-  return data.content?.[0]?.text || "Claude Response Failed";
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify({
+        model: "claude-3-haiku-20240307",
+        max_tokens: 2048,
+        messages: [{ role: "user", content: `${prompt}${jsonInstruction}\n\nContext: ${contents}` }]
+      })
+    });
+    const data = await response.json();
+    
+    if (data.error) {
+      console.error("Claude API Error:", data.error);
+      return `Claude Error: ${data.error.message || JSON.stringify(data.error)}`;
+    }
+    
+    if (data.content && data.content[0] && data.content[0].text) {
+      return data.content[0].text;
+    }
+    
+    console.error("Unexpected Claude response:", data);
+    return "Claude Response Failed: Unexpected response format";
+  } catch (error) {
+    console.error("Claude fetch error:", error);
+    return `Claude Request Error: ${error instanceof Error ? error.message : String(error)}`;
+  }
 };
 
 export const getIndustryInsights = async (provider: AiProvider, prompt: string, statsSummary: string) => {
