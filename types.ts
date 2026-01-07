@@ -81,6 +81,13 @@ export interface Scenario {
   multiplier: number;
 }
 
+export interface MarketShock {
+  id: string;
+  month: string; // Format: "YYYY-MM"
+  description: string;
+  percentageChange: number; // -75 to +100
+}
+
 export interface FilterState {
   startDate: string;
   endDate: string;
@@ -96,6 +103,7 @@ export interface FilterState {
   aiProvider: AiProvider;
   // New Resiliency parameters
   supplierVolatility: number; // 0 to 1
+  shocks: MarketShock[]; // Market disruptions/promotions
 }
 
 export interface OnePagerData {

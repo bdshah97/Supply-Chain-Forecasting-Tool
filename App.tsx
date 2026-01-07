@@ -13,8 +13,8 @@ import {
   Settings, Link as LinkIcon, Info, BookOpen, DollarSign, ShieldAlert, Sparkles, Wand2, Loader2, Gauge, Filter
 } from 'lucide-react';
 import { SKUS, CATEGORIES, SAMPLE_DATA, SAMPLE_ATTRIBUTES, SAMPLE_INVENTORY, DEFAULT_HORIZON } from './constants';
-import { DataPoint, FilterState, TimeInterval, ForecastMethodology, ProductAttribute, InventoryLevel, Scenario, AiProvider, AudienceType, OnePagerData } from './types';
-import { calculateForecast, calculateMetrics, cleanAnomalies } from './utils/forecasting';
+import { DataPoint, FilterState, TimeInterval, ForecastMethodology, ProductAttribute, InventoryLevel, Scenario, AiProvider, AudienceType, OnePagerData, MarketShock } from './types';
+import { calculateForecast, calculateMetrics, cleanAnomalies, applyMarketShocks } from './utils/forecasting';
 import { calculateSupplyChainMetrics, runParetoAnalysis } from './utils/supplyChain';
 import { exportToCSV } from './utils/export';
 import { getIndustryInsights, getMarketTrendAdjustment, MarketAdjustment, getNarrativeSummary, getOnePagerReport, getAnomalyAnalysis } from './services/aiService';
@@ -292,6 +292,9 @@ const App: React.FC = () => {
   const [inventory, setInventory] = useState<InventoryLevel[]>(SAMPLE_INVENTORY);
   const [attributes, setAttributes] = useState<ProductAttribute[]>(SAMPLE_ATTRIBUTES);
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
+  const [draftShockMonth, setDraftShockMonth] = useState<string>('');
+  const [draftShockDescription, setDraftShockDescription] = useState<string>('');
+  const [draftShockPercentage, setDraftShockPercentage] = useState<number>(0);
   const [draftIndustryPrompt, setDraftIndustryPrompt] = useState('Global manufacturer of industrial sensors');
   const [draftHorizon, setDraftHorizon] = useState(DEFAULT_HORIZON);
   const [draftAudience, setDraftAudience] = useState<AudienceType>(AudienceType.EXECUTIVE);
@@ -300,7 +303,7 @@ const App: React.FC = () => {
     confidenceLevel: 95, methodology: ForecastMethodology.HOLT_WINTERS,
     includeExternalTrends: false, globalLeadTime: 30, globalServiceLevel: 0.95,
     applyAnomalyCleaning: false, showLeadTimeOffset: false, aiProvider: AiProvider.GEMINI,
-    supplierVolatility: 0
+    supplierVolatility: 0, shocks: []
   });
   
   const [committedSettings, setCommittedSettings] = useState({ filters: { ...filters }, horizon: draftHorizon, industryPrompt: draftIndustryPrompt, audience: draftAudience, triggerToken: 0 });
@@ -315,12 +318,33 @@ const App: React.FC = () => {
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [reportData, setReportData] = useState<OnePagerData | null>(null);
   const [isReportLoading, setIsReportLoading] = useState(false);
+  const [chartZoom, setChartZoom] = useState({ startIndex: 0, endIndex: 0 });
+  const chartContainerRef = useRef<HTMLDivElement>(null);
 
   const histUploadRef = useRef<HTMLInputElement>(null);
   const attrUploadRef = useRef<HTMLInputElement>(null);
   const invUploadRef = useRef<HTMLInputElement>(null);
 
   const handleRunAnalysis = () => setCommittedSettings({ filters: { ...filters }, horizon: draftHorizon, industryPrompt: draftIndustryPrompt, audience: draftAudience, triggerToken: Date.now() });
+
+  const handleAddShock = () => {
+    if (!draftShockMonth || !draftShockDescription || draftShockPercentage === 0) return;
+    if (draftShockPercentage < -75 || draftShockPercentage > 100) return;
+    const newShock: MarketShock = {
+      id: Date.now().toString(),
+      month: draftShockMonth,
+      description: draftShockDescription,
+      percentageChange: draftShockPercentage
+    };
+    setFilters({ ...filters, shocks: [...filters.shocks, newShock] });
+    setDraftShockMonth('');
+    setDraftShockDescription('');
+    setDraftShockPercentage(0);
+  };
+
+  const handleDeleteShock = (id: string) => {
+    setFilters({ ...filters, shocks: filters.shocks.filter(s => s.id !== id) });
+  };
 
   const handleFileUpload = (type: 'hist' | 'inv' | 'attr', e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
@@ -380,6 +404,8 @@ const App: React.FC = () => {
     if (committedSettings.filters.includeExternalTrends && marketAdj) {
       raw = raw.map(p => p.isForecast ? { ...p, forecast: Math.round(p.forecast * marketAdj.multiplier) } : p);
     }
+    // Apply market shocks
+    raw = applyMarketShocks(raw, committedSettings.filters.shocks);
     const currentInv = inventory.filter(i => committedSettings.filters.skus.includes(i.sku)).reduce((s, i) => s + i.onHand, 0);
     return calculateSupplyChainMetrics(
       raw, 
@@ -462,6 +488,21 @@ const App: React.FC = () => {
     } catch (e) { console.error(e); } 
     finally { setIsReportLoading(false); } 
   };
+
+  // Initialize chart zoom range when forecast data changes
+  useEffect(() => {
+    if (futureForecast.length > 0) {
+      setChartZoom({ startIndex: 0, endIndex: Math.max(40, futureForecast.length - 1) });
+    }
+  }, [futureForecast]);
+
+  // Handle scroll wheel zoom on chart
+  // Initialize chart zoom on futureForecast change
+  useEffect(() => {
+    if (futureForecast.length > 0) {
+      setChartZoom({ startIndex: 0, endIndex: Math.max(40, futureForecast.length - 1) });
+    }
+  }, [futureForecast.length]);
 
   useEffect(() => {
     if (committedSettings.triggerToken === 0) return;
@@ -549,6 +590,15 @@ const App: React.FC = () => {
                   <option key={key} value={value}>{value}</option>
                 ))}
             </select>
+            <div className="space-y-1.5">
+              <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest block">Audience Profile</label>
+              <select className="w-full p-2 bg-slate-950 border border-slate-800 rounded-lg text-[10px] font-bold text-slate-200 outline-none hover:border-emerald-500 transition-all" value={draftAudience} onChange={e => setDraftAudience(e.target.value as AudienceType)}>
+                {Object.entries(AudienceType).map(([key, value]) => (
+                  <option key={key} value={value}>{value}</option>
+                ))}
+              </select>
+              <p className="text-[7px] text-slate-600 font-medium italic">Insights tailored to your role</p>
+            </div>
             <textarea className="w-full p-2 bg-slate-950 border border-slate-800 rounded-lg text-[10px] text-slate-400 font-medium outline-none resize-none h-16 focus:border-indigo-500" placeholder="Industry context..." value={draftIndustryPrompt} onChange={e => setDraftIndustryPrompt(e.target.value)} />
             <div className="flex items-center justify-between p-2.5 bg-slate-950 rounded-xl border border-slate-800">
               <div className="flex flex-col"><span className="text-[8px] font-black text-slate-500 uppercase">Market Search</span><span className="text-[7px] text-slate-600 font-bold uppercase tracking-tighter">Live Web Grounding</span></div>
@@ -600,6 +650,40 @@ const App: React.FC = () => {
                 <span className={`text-[10px] font-black ${filters.supplierVolatility > 0.5 ? 'text-orange-400' : 'text-indigo-400'}`}>+{(filters.supplierVolatility * 100).toFixed(0)}%</span>
              </div>
              <input type="range" min="0" max="1" step="0.05" className="w-full accent-indigo-500 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer" value={filters.supplierVolatility} onChange={e => setFilters(f => ({...f, supplierVolatility: Number(e.target.value)}))} />
+          </div>
+        </section>
+
+        <section className="space-y-2 pt-2 border-t border-slate-800">
+          <h3 className="text-[9px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2"><Sparkles size={10}/> Market Disruptions</h3>
+          <div className="p-2.5 bg-slate-950 rounded-xl border border-slate-800 space-y-3">
+            <div className="space-y-2">
+              <label className="text-[8px] font-black text-slate-500 uppercase block">Month</label>
+              <input type="month" className="w-full p-1.5 bg-slate-900 border border-slate-800 rounded text-[10px] text-slate-200 outline-none" value={draftShockMonth} onChange={e => setDraftShockMonth(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[8px] font-black text-slate-500 uppercase block">Description</label>
+              <input type="text" placeholder="e.g., Holiday Promotion" className="w-full p-1.5 bg-slate-900 border border-slate-800 rounded text-[10px] text-slate-200 placeholder-slate-600 outline-none" value={draftShockDescription} onChange={e => setDraftShockDescription(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[8px] font-black text-slate-500 uppercase block">% Change ({draftShockPercentage > 0 ? '+' : ''}{draftShockPercentage}%)</label>
+              <input type="number" min="-75" max="100" className="w-full p-1.5 bg-slate-900 border border-slate-800 rounded text-[10px] text-slate-200 outline-none" value={draftShockPercentage} onChange={e => setDraftShockPercentage(Number(e.target.value))} />
+              <span className="text-[8px] text-slate-500">Range: -75% to +100%</span>
+            </div>
+            <button onClick={handleAddShock} disabled={!draftShockMonth || !draftShockDescription || draftShockPercentage === 0 || draftShockPercentage < -75 || draftShockPercentage > 100} className="w-full py-2 px-3 bg-indigo-600/20 border border-indigo-500/30 text-indigo-400 rounded-lg text-[9px] font-bold uppercase tracking-widest hover:bg-indigo-600/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"><Plus size={12}/> Add Shock</button>
+            
+            {filters.shocks.length > 0 && (
+              <div className="border-t border-slate-800 pt-3 space-y-2 max-h-32 overflow-y-auto">
+                {filters.shocks.map(shock => (
+                  <div key={shock.id} className="p-2 bg-slate-900 rounded border border-slate-700 flex justify-between items-center group hover:border-slate-600 transition-all">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[9px] font-bold text-slate-300 truncate">{shock.month} • {shock.description}</p>
+                      <p className={`text-[8px] font-black ${shock.percentageChange > 0 ? 'text-green-400' : 'text-red-400'}`}>{shock.percentageChange > 0 ? '+' : ''}{shock.percentageChange}%</p>
+                    </div>
+                    <button onClick={() => handleDeleteShock(shock.id)} className="ml-2 text-slate-500 hover:text-red-400 transition-all"><Trash2 size={12}/></button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </section>
 
@@ -673,14 +757,33 @@ const App: React.FC = () => {
                 <section className="bg-slate-900 p-6 rounded-[2.5rem] border border-slate-800 shadow-2xl relative">
                   <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
                     <h2 className="text-lg font-black text-white uppercase tracking-tighter">Consolidated Demand Trend</h2>
-                    <div className="flex items-center gap-3 px-4 py-1.5 bg-indigo-600/10 border border-indigo-500/20 rounded-full">
-                      <Zap size={12} className="text-indigo-400" />
-                      <span className="text-[9px] font-black uppercase text-indigo-400 tracking-widest">Model: {committedSettings.filters.methodology.split(' (')[0]}</span>
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-3 px-4 py-1.5 bg-indigo-600/10 border border-indigo-500/20 rounded-full">
+                        <Zap size={12} className="text-indigo-400" />
+                        <span className="text-[9px] font-black uppercase text-indigo-400 tracking-widest">Model: {committedSettings.filters.methodology.split(' (')[0]}</span>
+                      </div>
+                      <button onClick={() => setChartZoom({ startIndex: 0, endIndex: Math.max(40, futureForecast.length - 1) })} className="px-3 py-1.5 bg-slate-800 border border-slate-700 text-slate-400 rounded-lg text-[8px] font-black uppercase tracking-widest hover:bg-slate-700 hover:text-slate-300 transition-all">Reset Zoom</button>
                     </div>
                   </div>
-                  <div className="h-[400px]">
+                  <div className="bg-slate-800/50 p-4 rounded-xl mb-4 border border-slate-700/50">
+                    <div className="flex items-center justify-between gap-2 mb-3">
+                      <label className="text-[9px] font-black uppercase text-slate-400 tracking-widest">Zoom Range</label>
+                      <span className="text-[8px] text-slate-500">{chartZoom.startIndex} - {chartZoom.endIndex}</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <input type="range" min="0" max={Math.max(0, futureForecast.length - 1)} value={chartZoom.startIndex} onChange={(e) => {
+                        const newStart = parseInt(e.target.value);
+                        setChartZoom(prev => ({ startIndex: newStart, endIndex: Math.max(newStart + 10, prev.endIndex) }));
+                      }} className="flex-1 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500" />
+                      <input type="range" min="0" max={Math.max(0, futureForecast.length - 1)} value={chartZoom.endIndex} onChange={(e) => {
+                        const newEnd = parseInt(e.target.value);
+                        setChartZoom(prev => ({ startIndex: Math.min(newEnd - 10, prev.startIndex), endIndex: newEnd }));
+                      }} className="flex-1 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500" />
+                    </div>
+                  </div>
+                  <div className="h-[400px]" ref={chartContainerRef}>
                     <ResponsiveContainer width="100%" height="100%">
-                      <ComposedChart data={futureForecast} margin={{ left: 10, right: 10, top: 20 }}>
+                      <ComposedChart data={futureForecast.slice(chartZoom.startIndex, chartZoom.endIndex + 1)} margin={{ left: 10, right: 10, top: 20 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
                         <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 9, fill: '#64748b', fontWeight: 700}} />
                         <YAxis axisLine={false} tickLine={false} tickFormatter={(val) => formatNumber(val)} tick={{fontSize: 9, fill: '#64748b', fontWeight: 700}} />
@@ -835,8 +938,9 @@ const App: React.FC = () => {
                         <XAxis dataKey="sku" angle={-45} textAnchor="end" tick={{fontSize: 8}} />
                         <YAxis tickFormatter={(val) => formatNumber(val)} tick={{fontSize: 9}} />
                         <Tooltip 
-                          contentStyle={{backgroundColor: '#0f172a', borderRadius: '12px'}} 
+                          contentStyle={{backgroundColor: '#0f172a', borderRadius: '12px', color: '#ffffff'}} 
                           formatter={(val: number) => [formatNumber(val), 'Volume']}
+                          labelStyle={{color: '#ffffff'}}
                         />
                         <Bar dataKey="totalVolume" name="Volume">
                           {paretoResults.map((entry, index) => <Cell key={index} fill={entry.grade === 'A' ? '#6366f1' : entry.grade === 'B' ? '#fb923c' : '#475569'} />)}

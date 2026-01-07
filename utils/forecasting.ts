@@ -1,5 +1,5 @@
 
-import { DataPoint, ForecastPoint, ForecastMetrics, ForecastMethodology } from '../types';
+import { DataPoint, ForecastPoint, ForecastMetrics, ForecastMethodology, MarketShock } from '../types';
 
 /**
  * Statistics Helpers
@@ -19,6 +19,29 @@ const getZMultiplier = (conf: number) => {
   if (conf >= 85) return 1.44;
   if (conf >= 80) return 1.28;
   return 1.96; // Default to 95%
+};
+
+/**
+ * Apply Market Shocks to Forecasts
+ */
+export const applyMarketShocks = (forecastPoints: ForecastPoint[], shocks: MarketShock[]): ForecastPoint[] => {
+  if (shocks.length === 0) return forecastPoints;
+  
+  return forecastPoints.map(point => {
+    const shock = shocks.find(s => s.month === point.date.substring(0, 7)); // Extract YYYY-MM from date
+    if (shock && point.isForecast) {
+      const multiplier = 1 + (shock.percentageChange / 100);
+      return {
+        ...point,
+        forecast: Math.round(point.forecast * multiplier),
+        scenarioForecast: point.scenarioForecast ? Math.round(point.scenarioForecast * multiplier) : undefined,
+        projectedInventory: point.projectedInventory ? Math.round(point.projectedInventory * multiplier) : undefined,
+        projectedRevenue: point.projectedRevenue ? Math.round(point.projectedRevenue * multiplier) : undefined,
+        projectedMargin: point.projectedMargin ? Math.round(point.projectedMargin * multiplier) : undefined
+      };
+    }
+    return point;
+  });
 };
 
 /**
