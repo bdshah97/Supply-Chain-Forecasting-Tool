@@ -540,8 +540,8 @@ const App: React.FC = () => {
   const clearSkus = () => setFilters(f => ({ ...f, skus: [] }));
 
   return (
-    <div className="min-h-screen flex flex-col lg:flex-row bg-slate-950 font-sans text-slate-100 overflow-hidden">
-      <aside className="w-full lg:w-80 bg-slate-900 border-r border-slate-800 p-5 flex flex-col gap-4 h-screen overflow-y-auto no-scrollbar z-30 shadow-2xl shrink-0">
+    <div className="h-screen flex flex-col lg:flex-row items-stretch bg-slate-950 font-sans text-slate-100 overflow-hidden">
+      <aside className="w-full lg:w-80 bg-slate-900 border-r border-slate-800 p-5 flex flex-col gap-4 overflow-y-auto z-30 shadow-2xl shrink-0">
         <div className="mb-2">
           {/* Refined SSA & Company Brand Logo with Serif Font */}
           <svg viewBox="0 0 350 50" className="w-full h-auto text-[#002855]" xmlns="http://www.w3.org/2000/svg">
@@ -694,7 +694,7 @@ const App: React.FC = () => {
         </div>
       </aside>
 
-      <main className="flex-1 overflow-y-auto p-4 lg:p-6 space-y-6 bg-slate-950 no-scrollbar relative">
+      <main className="flex-1 overflow-y-auto p-4 lg:p-6 space-y-6 bg-slate-950 relative">
         <header className="bg-slate-900 p-4 rounded-3xl border border-slate-800 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl">
           <div className="flex bg-slate-950 p-1 rounded-2xl border border-slate-800">
             {['future', 'inventory', 'financials', 'quality', 'pareto'].map(tab => (
