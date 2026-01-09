@@ -37,6 +37,9 @@ export interface ForecastPoint {
   projectedRevenue?: number;
   projectedMargin?: number;
   inventoryValue?: number;
+  // Annotations
+  stickyNote?: string;
+  marketDisruption?: string;
 }
 
 export interface ForecastMetrics {
@@ -88,6 +91,13 @@ export interface MarketShock {
   percentageChange: number; // -75 to +100
 }
 
+export interface StickyNote {
+  id: string;
+  date: string; // Format: "YYYY-MM-DD"
+  content: string;
+  color?: string; // Optional color hex or Tailwind class
+}
+
 export interface FilterState {
   startDate: string;
   endDate: string;
@@ -104,6 +114,7 @@ export interface FilterState {
   // New Resiliency parameters
   supplierVolatility: number; // 0 to 1
   shocks: MarketShock[]; // Market disruptions/promotions
+  stickyNotes: StickyNote[]; // Qualitative annotations
 }
 
 export interface OnePagerData {

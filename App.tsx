@@ -16,7 +16,7 @@ import { SKUS, CATEGORIES, SAMPLE_DATA, SAMPLE_ATTRIBUTES, SAMPLE_INVENTORY, DEF
 import { DataPoint, FilterState, TimeInterval, ForecastMethodology, ProductAttribute, InventoryLevel, Scenario, AiProvider, AudienceType, OnePagerData, MarketShock } from './types';
 import { calculateForecast, calculateMetrics, cleanAnomalies, applyMarketShocks } from './utils/forecasting';
 import { calculateSupplyChainMetrics, runParetoAnalysis } from './utils/supplyChain';
-import { exportToCSV } from './utils/export';
+import { exportToCSV, exportBulkCSV } from './utils/export';
 import { getIndustryInsights, getMarketTrendAdjustment, MarketAdjustment, getNarrativeSummary, getOnePagerReport, getAnomalyAnalysis } from './services/aiService';
 import MetricsCard from './components/MetricsCard';
 import ChatAgent from './components/ChatAgent';
@@ -303,11 +303,11 @@ const App: React.FC = () => {
     confidenceLevel: 95, methodology: ForecastMethodology.HOLT_WINTERS,
     includeExternalTrends: false, globalLeadTime: 30, globalServiceLevel: 0.95,
     applyAnomalyCleaning: false, showLeadTimeOffset: false, aiProvider: AiProvider.GEMINI,
-    supplierVolatility: 0, shocks: []
+    supplierVolatility: 0, shocks: [], stickyNotes: []
   });
   
   const [committedSettings, setCommittedSettings] = useState({ filters: { ...filters }, horizon: draftHorizon, industryPrompt: draftIndustryPrompt, audience: draftAudience, triggerToken: 0 });
-  const [activeTab, setActiveTab] = useState<'future' | 'quality' | 'inventory' | 'financials' | 'pareto'>('future');
+  const [activeTab, setActiveTab] = useState<'future' | 'quality' | 'inventory' | 'financials' | 'pareto' | 'volatility'>('future');
   const [aiInsight, setAiInsight] = useState('Analyze context to generate insights...');
   const [narrativeText, setNarrativeText] = useState('Business narrative pending analysis...');
   const [anomalyRca, setAnomalyRca] = useState<string | null>(null);
@@ -321,11 +321,15 @@ const App: React.FC = () => {
   const [chartZoom, setChartZoom] = useState({ startIndex: 0, endIndex: 0 });
   const chartContainerRef = useRef<HTMLDivElement>(null);
 
+  // Sticky Notes state
+  const [draftNoteDate, setDraftNoteDate] = useState('');
+  const [draftNoteContent, setDraftNoteContent] = useState('');
+
   const histUploadRef = useRef<HTMLInputElement>(null);
   const attrUploadRef = useRef<HTMLInputElement>(null);
   const invUploadRef = useRef<HTMLInputElement>(null);
 
-  const handleRunAnalysis = () => setCommittedSettings({ filters: { ...filters }, horizon: draftHorizon, industryPrompt: draftIndustryPrompt, audience: draftAudience, triggerToken: Date.now() });
+  const handleRunAnalysis = () => setCommittedSettings({ filters: { ...filters }, horizon: draftHorizon, industryPrompt: draftIndustryPrompt, audience: draftAudience, triggerToken: !committedSettings.triggerToken });
 
   const handleAddShock = () => {
     if (!draftShockMonth || !draftShockDescription || draftShockPercentage === 0) return;
@@ -344,6 +348,18 @@ const App: React.FC = () => {
 
   const handleDeleteShock = (id: string) => {
     setFilters({ ...filters, shocks: filters.shocks.filter(s => s.id !== id) });
+  };
+
+  const handleAddNote = () => {
+    if (!draftNoteDate || !draftNoteContent.trim()) return;
+    const newNote = { id: Date.now().toString(), date: draftNoteDate, content: draftNoteContent.trim() };
+    setFilters({ ...filters, stickyNotes: [...filters.stickyNotes, newNote] });
+    setDraftNoteDate('');
+    setDraftNoteContent('');
+  };
+
+  const handleDeleteNote = (id: string) => {
+    setFilters({ ...filters, stickyNotes: filters.stickyNotes.filter(n => n.id !== id) });
   };
 
   const handleFileUpload = (type: 'hist' | 'inv' | 'attr', e: React.ChangeEvent<HTMLInputElement>) => {
@@ -460,7 +476,12 @@ const App: React.FC = () => {
   };
 
   const handleExport = () => {
-    exportToCSV(futureForecast, `forecast_${committedSettings.industryPrompt.replace(/\s+/g, '_').toLowerCase()}`);
+    const dataBySkus = new Map<string, ForecastPoint[]>();
+    committedSettings.filters.skus.forEach(sku => {
+      const skuData = futureForecast.filter(f => f.sku === sku);
+      if (skuData.length > 0) dataBySkus.set(sku, skuData);
+    });
+    exportBulkCSV(dataBySkus, `forecast_${committedSettings.industryPrompt.replace(/\s+/g, '_').toLowerCase()}`, committedSettings.filters.shocks, committedSettings.filters.stickyNotes);
   };
 
   const paretoResults = useMemo(() => {
@@ -472,6 +493,29 @@ const App: React.FC = () => {
        }
     });
     return runParetoAnalysis(Array.from(skuMap.entries()).map(([sku, totalVolume]) => ({ sku, totalVolume })));
+  }, [data, committedSettings.filters.category]);
+
+  const volatilityResults = useMemo(() => {
+    const skuVolatility = new Map<string, { sku: string; volatility: number; avgQuantity: number; stdDev: number }>();
+    const skuDataMap = new Map<string, number[]>();
+    
+    data.forEach(d => {
+      const matchesCategory = committedSettings.filters.category === 'All' || d.category === committedSettings.filters.category;
+      if (matchesCategory) {
+        if (!skuDataMap.has(d.sku)) skuDataMap.set(d.sku, []);
+        skuDataMap.get(d.sku)!.push(d.quantity);
+      }
+    });
+
+    skuDataMap.forEach((quantities, sku) => {
+      const avg = quantities.reduce((a, b) => a + b, 0) / quantities.length;
+      const variance = quantities.reduce((sum, q) => sum + Math.pow(q - avg, 2), 0) / quantities.length;
+      const stdDev = Math.sqrt(variance);
+      const cv = avg > 0 ? (stdDev / avg) * 100 : 0; // Coefficient of Variation
+      skuVolatility.set(sku, { sku, volatility: cv, avgQuantity: avg, stdDev });
+    });
+
+    return Array.from(skuVolatility.values()).sort((a, b) => b.volatility - a.volatility);
   }, [data, committedSettings.filters.category]);
 
   const dashboardContext = useMemo(() => {
@@ -505,7 +549,7 @@ const App: React.FC = () => {
   }, [futureForecast.length]);
 
   useEffect(() => {
-    if (committedSettings.triggerToken === 0) return;
+    if (!committedSettings.triggerToken) return;
     const runAI = async () => {
       setIsLoading(true);
       const [insights, narrative] = await Promise.all([
@@ -544,7 +588,7 @@ const App: React.FC = () => {
       <aside className="w-full lg:w-80 bg-slate-900 border-r border-slate-800 p-5 flex flex-col gap-4 overflow-y-auto z-30 shadow-2xl shrink-0">
         <div className="mb-2">
           {/* Refined SSA & Company Brand Logo with Serif Font */}
-          <svg viewBox="0 0 350 50" className="w-full h-auto text-[#002855]" xmlns="http://www.w3.org/2000/svg">
+          <svg viewBox="0 0 350 50" className="w-full h-auto text-white" xmlns="http://www.w3.org/2000/svg">
             <g stroke="currentColor" strokeWidth="3.5" fill="none" strokeLinecap="square">
               {/* The Bracket [ */}
               <path d="M12 10 H4 V40 H12" /> 
@@ -697,15 +741,15 @@ const App: React.FC = () => {
       <main className="flex-1 overflow-y-auto p-4 lg:p-6 space-y-6 bg-slate-950 relative">
         <header className="bg-slate-900 p-4 rounded-3xl border border-slate-800 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl">
           <div className="flex bg-slate-950 p-1 rounded-2xl border border-slate-800">
-            {['future', 'inventory', 'financials', 'quality', 'pareto'].map(tab => (
+            {['future', 'inventory', 'financials', 'quality', 'pareto', 'volatility'].map(tab => (
               <button key={tab} onClick={() => setActiveTab(tab as any)} className={`px-4 py-2 text-[9px] font-black uppercase tracking-widest rounded-xl transition-all ${activeTab === tab ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>
                 {tab}
               </button>
             ))}
           </div>
           <div className="flex gap-2">
-            <button onClick={handleExport} disabled={committedSettings.triggerToken === 0} className="px-5 py-2 bg-slate-800 border border-slate-700 text-slate-300 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-slate-700 transition-all disabled:opacity-50"><Download size={14}/> Export CSV</button>
-            <button onClick={handleGenerateReport} disabled={committedSettings.triggerToken === 0} className="px-5 py-2 bg-indigo-600/10 border border-indigo-500/20 text-indigo-400 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-indigo-600/20 transition-all disabled:opacity-50"><FileOutput size={14}/> Generate Brief</button>
+            <button onClick={handleExport} disabled={!committedSettings.triggerToken} className="px-5 py-2 bg-slate-800 border border-slate-700 text-slate-300 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-slate-700 transition-all disabled:opacity-50"><Download size={14}/> Export CSV</button>
+            <button onClick={handleGenerateReport} disabled={!committedSettings.triggerToken} className="px-5 py-2 bg-indigo-600/10 border border-indigo-500/20 text-indigo-400 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-indigo-600/20 transition-all disabled:opacity-50"><FileOutput size={14}/> Generate Brief</button>
           </div>
         </header>
 
@@ -734,7 +778,7 @@ const App: React.FC = () => {
            </div>
         </section>
 
-        {committedSettings.triggerToken === 0 ? (
+        {!committedSettings.triggerToken ? (
           <div className="flex flex-col items-center justify-center py-32 bg-slate-900/50 border-2 border-slate-800 border-dashed rounded-[3rem]">
             <div className="p-5 bg-indigo-500/10 rounded-full mb-6 border border-indigo-500/20 animate-pulse"><Cpu className="text-indigo-400" size={40}/></div>
             <h2 className="text-xl font-black text-white uppercase tracking-tight mb-2">Engine Inactive</h2>
@@ -799,6 +843,41 @@ const App: React.FC = () => {
                         <Line type="monotone" dataKey="scenarioForecast" name="Forecasted Quantity" stroke="#ef4444" strokeWidth={4} dot={{r: 4, fill: '#ef4444'}} />
                       </ComposedChart>
                     </ResponsiveContainer>
+                  </div>
+                </section>
+
+                <section className="bg-slate-900 p-6 rounded-[2.5rem] border border-slate-800 shadow-2xl">
+                  <div className="flex items-center gap-2 mb-4">
+                    <Sparkles size={16} className="text-amber-400" />
+                    <h3 className="text-sm font-black text-white uppercase tracking-widest">Sticky Notes</h3>
+                  </div>
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div className="lg:col-span-2 space-y-3">
+                      <div className="space-y-2">
+                        <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest block">Date</label>
+                        <input type="date" className="w-full p-2 bg-slate-950 border border-slate-800 rounded-lg text-[10px] text-slate-200 outline-none focus:border-amber-500 transition-all" value={draftNoteDate} onChange={e => setDraftNoteDate(e.target.value)} />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest block">Note</label>
+                        <textarea className="w-full p-2 bg-slate-950 border border-slate-800 rounded-lg text-[10px] text-slate-200 placeholder-slate-600 outline-none resize-none h-20 focus:border-amber-500 transition-all" placeholder="Add your annotation..." value={draftNoteContent} onChange={e => setDraftNoteContent(e.target.value)} />
+                      </div>
+                      <button onClick={handleAddNote} disabled={!draftNoteDate || !draftNoteContent.trim()} className="w-full py-2 px-3 bg-amber-600/20 border border-amber-500/30 text-amber-400 rounded-lg text-[9px] font-bold uppercase tracking-widest hover:bg-amber-600/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"><Plus size={12}/> Add Note</button>
+                    </div>
+                    <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                      {filters.stickyNotes.length === 0 ? (
+                        <p className="text-[8px] text-slate-600 italic text-center py-4">No notes yet</p>
+                      ) : (
+                        filters.stickyNotes.map(note => (
+                          <div key={note.id} className="p-3 bg-slate-950 rounded border border-slate-700 group hover:border-amber-500/30 transition-all">
+                            <div className="flex justify-between items-start gap-2 mb-1">
+                              <p className="text-[9px] font-bold text-amber-400">{note.date}</p>
+                              <button onClick={() => handleDeleteNote(note.id)} className="text-slate-600 hover:text-red-400 transition-all opacity-0 group-hover:opacity-100"><Trash2 size={12}/></button>
+                            </div>
+                            <p className="text-[9px] text-slate-300 leading-relaxed">{note.content}</p>
+                          </div>
+                        ))
+                      )}
+                    </div>
                   </div>
                 </section>
               </div>
@@ -967,10 +1046,73 @@ const App: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {activeTab === 'volatility' && (
+              <div className="space-y-6">
+                <section className="bg-slate-900 p-6 rounded-[2.5rem] border border-slate-800 shadow-2xl">
+                  <h3 className="text-sm font-black text-white uppercase tracking-widest mb-6">SKU Volatility Analysis</h3>
+                  <p className="text-[10px] text-slate-400 mb-6 font-medium">Coefficient of Variation - Higher values indicate more unpredictable demand patterns</p>
+                  <div className="h-[400px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={volatilityResults.slice(0, 15)} layout="vertical">
+                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#1e293b" />
+                        <XAxis type="number" tickFormatter={(val) => `${val.toFixed(0)}%`} tick={{fontSize: 9}} />
+                        <YAxis dataKey="sku" type="category" width={60} tick={{fontSize: 9}} />
+                        <Tooltip 
+                          contentStyle={{backgroundColor: '#0f172a', borderRadius: '12px', color: '#ffffff', border: '1px solid #1e293b'}} 
+                          formatter={(val: number, name) => [`${val.toFixed(2)}%`, 'Volatility']}
+                          labelStyle={{color: '#ffffff'}}
+                          wrapperStyle={{color: '#ffffff'}}
+                          cursor={{fill: 'rgba(255, 255, 255, 0.1)'}}
+                        />
+                        <Bar dataKey="volatility" name="Volatility %">
+                          {volatilityResults.slice(0, 15).map((entry, index) => {
+                            const color = entry.volatility > 50 ? '#ef4444' : entry.volatility > 30 ? '#fb923c' : '#6366f1';
+                            return <Cell key={index} fill={color} />;
+                          })}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </section>
+
+                <section className="bg-slate-900 p-6 rounded-[2.5rem] border border-slate-800 shadow-2xl">
+                  <h3 className="text-sm font-black text-white uppercase tracking-widest mb-6">Volatility Ranking (All SKUs)</h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[9px]">
+                      <thead>
+                        <tr className="border-b border-slate-800">
+                          <th className="text-left p-3 text-slate-500 font-black uppercase">SKU</th>
+                          <th className="text-right p-3 text-slate-500 font-black uppercase">Volatility %</th>
+                          <th className="text-right p-3 text-slate-500 font-black uppercase">Avg Qty</th>
+                          <th className="text-right p-3 text-slate-500 font-black uppercase">Std Dev</th>
+                          <th className="text-center p-3 text-slate-500 font-black uppercase">Risk</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {volatilityResults.map((item, i) => (
+                          <tr key={i} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-all">
+                            <td className="p-3 text-slate-300 font-bold">{item.sku}</td>
+                            <td className="text-right p-3 text-slate-300">{item.volatility.toFixed(2)}%</td>
+                            <td className="text-right p-3 text-slate-400">{formatNumber(item.avgQuantity)}</td>
+                            <td className="text-right p-3 text-slate-400">{formatNumber(item.stdDev)}</td>
+                            <td className="text-center p-3">
+                              <span className={`px-2 py-1 rounded-full text-[8px] font-black uppercase ${item.volatility > 50 ? 'bg-red-500/20 text-red-400' : item.volatility > 30 ? 'bg-orange-500/20 text-orange-400' : 'bg-indigo-500/20 text-indigo-400'}`}>
+                                {item.volatility > 50 ? 'High' : item.volatility > 30 ? 'Medium' : 'Low'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              </div>
+            )}
           </div>
         )}
         
-        <ChatAgent provider={committedSettings.filters.aiProvider} audience={committedSettings.audience} context={dashboardContext} />
+        <ChatAgent provider={committedSettings.filters.aiProvider} audience={committedSettings.audience} context={dashboardContext} hasRunAnalysis={committedSettings.triggerToken} />
         <ReportModal isOpen={isReportOpen} onClose={() => setIsReportOpen(false)} data={reportData} isLoading={isReportLoading} />
         <SchemaModal isOpen={isSchemaModalOpen} onClose={() => setIsSchemaModalOpen(false)} />
       </main>

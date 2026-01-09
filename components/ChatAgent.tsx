@@ -8,11 +8,10 @@ interface ChatAgentProps {
   provider: AiProvider;
   audience: AudienceType;
   context: string;
+  hasRunAnalysis: boolean;
 }
 
-const MAX_TURNS = 10;
-
-const ChatAgent: React.FC<ChatAgentProps> = ({ provider, audience, context }) => {
+const ChatAgent: React.FC<ChatAgentProps> = ({ provider, audience, context, hasRunAnalysis }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -26,7 +25,7 @@ const ChatAgent: React.FC<ChatAgentProps> = ({ provider, audience, context }) =>
   }, [messages, isLoading]);
 
   const handleSend = async () => {
-    if (!input.trim() || isLoading || messages.length / 2 >= MAX_TURNS) return;
+    if (!input.trim() || isLoading) return;
 
     const userMsg: ChatMessage = { role: 'user', content: input.trim() };
     const newMessages = [...messages, userMsg];
@@ -44,8 +43,6 @@ const ChatAgent: React.FC<ChatAgentProps> = ({ provider, audience, context }) =>
     setMessages([]);
     setIsOpen(false);
   };
-
-  const turnsLeft = MAX_TURNS - Math.floor(messages.length / 2);
 
   return (
     <>
@@ -74,7 +71,7 @@ const ChatAgent: React.FC<ChatAgentProps> = ({ provider, audience, context }) =>
                 <h3 className="text-sm font-black text-white uppercase tracking-widest">SSA AI Agent</h3>
               </div>
               <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">
-                {provider} • {turnsLeft} Turns Left
+                {hasRunAnalysis ? `${provider} • Connected` : 'Ready (Run Analysis to Connect)'}
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -115,12 +112,6 @@ const ChatAgent: React.FC<ChatAgentProps> = ({ provider, audience, context }) =>
                 </div>
               </div>
             )}
-            {turnsLeft === 0 && messages[messages.length-1]?.role === 'assistant' && (
-              <div className="p-3 bg-orange-500/10 border border-orange-500/20 rounded-xl text-center">
-                <p className="text-[9px] font-black text-orange-400 uppercase tracking-widest">Session Turn Limit Reached</p>
-                <p className="text-[8px] text-slate-500 uppercase mt-1">Clear chat to start a new analysis</p>
-              </div>
-            )}
           </div>
 
           {/* Input */}
@@ -130,13 +121,13 @@ const ChatAgent: React.FC<ChatAgentProps> = ({ provider, audience, context }) =>
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handleSend()}
-                disabled={isLoading || turnsLeft === 0}
-                placeholder={turnsLeft > 0 ? "Ask about current data..." : "Limit reached"}
+                disabled={isLoading}
+                placeholder="Ask about current data..."
                 className="w-full bg-slate-950 border border-slate-800 rounded-2xl py-3 px-4 text-xs text-white outline-none focus:ring-1 focus:ring-indigo-500 transition-all pr-12 disabled:opacity-50 disabled:cursor-not-allowed"
               />
               <button 
                 onClick={handleSend}
-                disabled={!input.trim() || isLoading || turnsLeft === 0}
+                disabled={!input.trim() || isLoading}
                 className="absolute right-2 top-1.5 p-1.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-500 transition-all disabled:opacity-50 disabled:bg-slate-800 shadow-lg"
               >
                 <Send size={14} />
