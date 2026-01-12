@@ -13,10 +13,10 @@ import {
   Settings, Link as LinkIcon, Info, BookOpen, DollarSign, ShieldAlert, Sparkles, Wand2, Loader2, Gauge, Filter
 } from 'lucide-react';
 import { SKUS, CATEGORIES, SAMPLE_DATA, SAMPLE_ATTRIBUTES, SAMPLE_INVENTORY, DEFAULT_HORIZON } from './constants';
-import { DataPoint, FilterState, TimeInterval, ForecastMethodology, ProductAttribute, InventoryLevel, Scenario, AiProvider, AudienceType, OnePagerData, MarketShock } from './types';
+import { DataPoint, FilterState, TimeInterval, ForecastMethodology, ProductAttribute, InventoryLevel, Scenario, AiProvider, AudienceType, OnePagerData, MarketShock, ProductionPlan } from './types';
 import { calculateForecast, calculateMetrics, cleanAnomalies, applyMarketShocks } from './utils/forecasting';
 import { calculateSupplyChainMetrics, runParetoAnalysis } from './utils/supplyChain';
-import { exportToCSV, exportBulkCSV } from './utils/export';
+import { exportToCSV, exportBulkCSV, exportAlerts } from './utils/export';
 import { getIndustryInsights, getMarketTrendAdjustment, MarketAdjustment, getNarrativeSummary, getOnePagerReport, getAnomalyAnalysis } from './services/aiService';
 import MetricsCard from './components/MetricsCard';
 import ChatAgent from './components/ChatAgent';
@@ -328,6 +328,7 @@ const App: React.FC = () => {
   const histUploadRef = useRef<HTMLInputElement>(null);
   const attrUploadRef = useRef<HTMLInputElement>(null);
   const invUploadRef = useRef<HTMLInputElement>(null);
+  const prodUploadRef = useRef<HTMLInputElement>(null);
 
   const handleRunAnalysis = () => setCommittedSettings({ filters: { ...filters }, horizon: draftHorizon, industryPrompt: draftIndustryPrompt, audience: draftAudience, triggerToken: !committedSettings.triggerToken });
 
@@ -362,7 +363,7 @@ const App: React.FC = () => {
     setFilters({ ...filters, stickyNotes: filters.stickyNotes.filter(n => n.id !== id) });
   };
 
-  const handleFileUpload = (type: 'hist' | 'inv' | 'attr', e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = (type: 'hist' | 'inv' | 'attr' | 'prod', e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
     const reader = new FileReader();
     reader.onload = (event) => {
@@ -383,6 +384,23 @@ const App: React.FC = () => {
           const p = line.split(','); return { sku: p[0].trim(), category: p[1].trim(), leadTimeDays: parseInt(p[2].trim()) || 30, unitCost: parseFloat(p[3].trim()) || 10, sellingPrice: parseFloat(p[4].trim()) || 15, serviceLevel: parseFloat(p[5].trim()) || 0.95 } as ProductAttribute;
         });
         if (newAttr.length > 0) setAttributes(newAttr);
+      } else if (type === 'prod') {
+        const newPlans = lines.slice(1).filter(l => l.includes(',')).map(line => {
+          const p = line.split(','); 
+          const quantity = parseInt(p[2].trim()) || 0;
+          const planType = (p[3]?.trim() || 'production') as 'production' | 'po';
+          if (quantity <= 0) return null;
+          return { 
+            id: Date.now().toString() + Math.random(), 
+            sku: p[0].trim(), 
+            date: p[1].trim(), 
+            quantity, 
+            type: planType
+          } as ProductionPlan;
+        }).filter(Boolean) as ProductionPlan[];
+        if (newPlans.length > 0) {
+          setFilters(f => ({ ...f, productionPlans: [...f.productionPlans, ...newPlans] }));
+        }
       }
     };
     reader.readAsText(file);
@@ -432,7 +450,8 @@ const App: React.FC = () => {
       scenarios, 
       committedSettings.filters.showLeadTimeOffset,
       committedSettings.filters.supplierVolatility,
-      attributes
+      attributes,
+      committedSettings.filters.productionPlans
     );
   }, [aggregatedData, committedSettings, marketAdj, stats.std, inventory, scenarios, attributes]);
 
@@ -517,6 +536,22 @@ const App: React.FC = () => {
 
     return Array.from(skuVolatility.values()).sort((a, b) => b.volatility - a.volatility);
   }, [data, committedSettings.filters.category]);
+
+  const inventoryAlerts = useMemo(() => {
+    return futureForecast.filter(p => 
+      p.isForecast && 
+      p.projectedInventory !== undefined && 
+      p.safetyStock !== undefined && 
+      (p.projectedInventory < 0 || p.projectedInventory < p.safetyStock)
+    ).map(point => ({
+      date: point.date,
+      projectedInventory: point.projectedInventory!,
+      safetyStock: point.safetyStock!,
+      isCritical: point.projectedInventory! < 0,
+      totalProduction: futureForecast.filter(f => f.isForecast && f.date <= point.date).reduce((sum, f) => sum + (f.incomingProduction || 0), 0),
+      totalDemand: futureForecast.filter(f => f.isForecast && f.date <= point.date).reduce((sum, f) => sum + f.forecast, 0)
+    }));
+  }, [futureForecast]);
 
   const dashboardContext = useMemo(() => {
     const financials = `Revenue: $${formatNumber(financialStats.totalRevenue)}. Risk: $${formatNumber(financialStats.valueAtRisk)}.`;
@@ -608,7 +643,7 @@ const App: React.FC = () => {
             <h3 className="text-[9px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2"><Database size={10}/> Data Console</h3>
             <button onClick={() => setIsSchemaModalOpen(true)} className="text-[8px] font-black uppercase text-indigo-400 hover:underline">Schema Guide</button>
           </div>
-          <div className="grid grid-cols-3 gap-1.5">
+          <div className="grid grid-cols-2 gap-1.5">
             <button onClick={() => histUploadRef.current?.click()} className="p-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-400 hover:border-indigo-500 transition-all flex flex-col items-center gap-1 group">
               <FileText size={12} className="text-indigo-400 group-hover:scale-110 transition-transform"/><span className="text-[7px] font-black uppercase">Sales</span>
             </button>
@@ -618,10 +653,15 @@ const App: React.FC = () => {
             <button onClick={() => invUploadRef.current?.click()} className="p-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-400 hover:border-orange-500 transition-all flex flex-col items-center gap-1 group">
               <Package size={12} className="text-orange-400 group-hover:scale-110 transition-transform"/><span className="text-[7px] font-black uppercase">Stock</span>
             </button>
+            <button onClick={() => prodUploadRef.current?.click()} className="p-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-400 hover:border-cyan-500 transition-all flex flex-col items-center gap-1 group">
+              <Zap size={12} className="text-cyan-400 group-hover:scale-110 transition-transform"/><span className="text-[7px] font-black uppercase">Prod/PO</span>
+            </button>
           </div>
+          <p className="text-[7px] text-slate-600 font-medium italic px-1">Upload finished goods production plans or open purchase orders</p>
           <input type="file" ref={histUploadRef} className="hidden" onChange={e => handleFileUpload('hist', e)} />
           <input type="file" ref={attrUploadRef} className="hidden" onChange={e => handleFileUpload('attr', e)} />
           <input type="file" ref={invUploadRef} className="hidden" onChange={e => handleFileUpload('inv', e)} />
+          <input type="file" ref={prodUploadRef} className="hidden" onChange={e => handleFileUpload('prod', e)} />
         </section>
 
         <section className="space-y-2 pt-2 border-t border-slate-800">
@@ -1002,6 +1042,53 @@ const App: React.FC = () => {
                       </ComposedChart>
                     </ResponsiveContainer>
                   </div>
+                </section>
+
+                <section className="bg-slate-900 p-8 rounded-[2.5rem] border border-slate-800 shadow-2xl">
+                  <div className="flex items-center justify-between mb-6">
+                    <h3 className="text-sm font-black text-white uppercase tracking-widest flex items-center gap-2">
+                      <AlertTriangle size={16} className="text-red-400"/>
+                      Inventory Alerts
+                    </h3>
+                    {inventoryAlerts.length > 0 && (
+                      <button 
+                        onClick={() => {
+                          const currentOnHand = inventory.filter(i => committedSettings.filters.skus.includes(i.sku)).reduce((s, i) => s + i.onHand, 0);
+                          exportAlerts(futureForecast, currentOnHand, `alerts_${committedSettings.industryPrompt.replace(/\s+/g, '_').toLowerCase()}`);
+                        }}
+                        className="px-3 py-1.5 bg-red-600/20 border border-red-500/30 text-red-400 rounded-lg text-[8px] font-black uppercase tracking-widest hover:bg-red-600/30 transition-all"
+                      >
+                        📥 Export Alerts
+                      </button>
+                    )}
+                  </div>
+                  {inventoryAlerts.length === 0 ? (
+                    <p className="text-[10px] text-emerald-400 italic">✓ All inventory levels healthy</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {inventoryAlerts.slice(0, 5).map((alert, i) => (
+                        <div key={i} className={`p-3 rounded-lg border ${alert.isCritical ? 'bg-red-500/10 border-red-500/30' : 'bg-amber-500/10 border-amber-500/30'}`}>
+                          <div className="flex items-start gap-2">
+                            <div className={`text-lg font-black ${alert.isCritical ? 'text-red-400' : 'text-amber-400'}`}>
+                              {alert.isCritical ? '✕' : '⚠'}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[9px] font-bold text-slate-200">
+                                {alert.isCritical ? 'STOCKOUT RISK' : 'SAFETY STOCK BREACH'}
+                              </p>
+                              <p className="text-[8px] text-slate-400 mt-0.5">
+                                {alert.date}: {formatNumber(alert.projectedInventory)} units (min: {formatNumber(alert.safetyStock)})
+                              </p>
+                              <p className="text-[8px] text-slate-500 mt-1">
+                                Production: {formatNumber(alert.totalProduction)} | Demand: {formatNumber(alert.totalDemand)}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      {inventoryAlerts.length > 5 && <p className="text-[8px] text-slate-500 italic text-center">+{inventoryAlerts.length - 5} more alerts</p>}
+                    </div>
+                  )}
                 </section>
               </div>
             )}

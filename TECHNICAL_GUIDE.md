@@ -30,6 +30,59 @@ Proprietary logic for operationalizing statistical forecasts:
   - **Class C**: Final 5% (Low priority stock).
 - **Resiliency Simulator**: Stress-tests the chain by applying `Supplier Volatility` multipliers to lead times and safety stock requirements.
 
+### Production Plans & Open POs Integration
+
+The inventory projection system now factors in **incoming production and open purchase orders** for accurate supply-demand reconciliation:
+
+#### Data Structure
+```typescript
+interface ProductionPlan {
+  id: string;
+  sku: string;
+  date: string;           // Arrival date (YYYY-MM-DD format)
+  quantity: number;       // Units arriving
+  type: 'production' | 'po';  // Production order or open PO
+}
+```
+
+#### Inventory Calculation Flow
+1. **Load Production Plans**: Users upload CSV with format: `SKU,Date,Quantity,Type`
+2. **Integrate into Forecast**: `calculateSupplyChainMetrics()` processes each forecast period:
+   ```
+   For each forecast date:
+     runningInventory -= forecast_demand
+     runningInventory += sum_of_production_for_that_date
+     projectedInventory = runningInventory
+   ```
+3. **Alert Generation**: The system automatically flags:
+   - **STOCKOUT RISK**: When `projectedInventory < 0` (critical)
+   - **SAFETY STOCK BREACH**: When `projectedInventory < safetyStock` (warning)
+4. **Export Capability**: Users can export inventory alerts with detailed visibility:
+   - Current On-Hand inventory
+   - Projected inventory at risk date
+   - Total production scheduled to that date
+   - Total demand expected to that date
+   - This allows business users to understand the "puts and takes" driving the alert
+
+#### Example Calculation
+```
+Current On-Hand: 1,000 units
+Production Plan: 500 units on 2024-06-15
+Forecast Demand: 800 units/month
+
+June Projection:
+  Starting: 1,000
+  - Demand: 800
+  + Production (6/15): 500
+  = 700 units (healthy)
+
+July Projection:
+  Starting: 700
+  - Demand: 800
+  = -100 units (CRITICAL ALERT)
+```
+
+
 ## 3. Gemini AI Integration (`services/aiService.ts`)
 
 The app leverages Gemini 3 Flash for context-aware intelligence. Below are the key prompt templates used:

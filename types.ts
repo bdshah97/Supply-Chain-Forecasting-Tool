@@ -33,6 +33,7 @@ export interface ForecastPoint {
   reorderPoint?: number;
   scenarioForecast?: number;
   offsetDate?: string;
+  incomingProduction?: number; // Incoming from production plans or POs
   // Financial metrics
   projectedRevenue?: number;
   projectedMargin?: number;
@@ -98,6 +99,14 @@ export interface StickyNote {
   color?: string; // Optional color hex or Tailwind class
 }
 
+export interface ProductionPlan {
+  id: string;
+  sku: string;
+  date: string; // Format: "YYYY-MM-DD" - when inventory arrives
+  quantity: number; // Units being added
+  type: 'production' | 'po'; // production = completed, po = open PO
+}
+
 export interface FilterState {
   startDate: string;
   endDate: string;
@@ -115,6 +124,7 @@ export interface FilterState {
   supplierVolatility: number; // 0 to 1
   shocks: MarketShock[]; // Market disruptions/promotions
   stickyNotes: StickyNote[]; // Qualitative annotations
+  productionPlans: ProductionPlan[]; // Production orders / Open POs
 }
 
 export interface OnePagerData {

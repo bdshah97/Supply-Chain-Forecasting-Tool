@@ -1,5 +1,5 @@
 
-import { ForecastPoint, Scenario, ProductAttribute } from '../types';
+import { ForecastPoint, Scenario, ProductAttribute, ProductionPlan } from '../types';
 
 export const getZScore = (serviceLevel: number): number => {
   if (serviceLevel >= 0.999) return 3.09;
@@ -21,7 +21,8 @@ export const calculateSupplyChainMetrics = (
   scenarios: Scenario[] = [],
   showOffset: boolean = false,
   volatilityMultiplier: number = 0,
-  attributes: ProductAttribute[] = []
+  attributes: ProductAttribute[] = [],
+  productionPlans: ProductionPlan[] = []
 ): ForecastPoint[] => {
   const z = getZScore(serviceLevel);
   
@@ -53,6 +54,15 @@ export const calculateSupplyChainMetrics = (
       runningInventory -= scenarioVal;
     }
 
+    // Add incoming production/POs for this date
+    const incomingProduction = productionPlans
+      .filter(plan => plan.date === p.date)
+      .reduce((sum, plan) => sum + plan.quantity, 0);
+    
+    if (incomingProduction > 0) {
+      runningInventory += incomingProduction;
+    }
+
     let offsetDate = p.date;
     if (showOffset && p.isForecast) {
       const d = new Date(p.date);
@@ -67,6 +77,7 @@ export const calculateSupplyChainMetrics = (
       safetyStock,
       reorderPoint,
       projectedInventory: p.isForecast ? runningInventory : onHand,
+      incomingProduction: incomingProduction > 0 ? incomingProduction : undefined,
       // Round to nearest dollar
       projectedRevenue: p.isForecast ? Math.round(scenarioVal * avgPrice) : undefined,
       projectedMargin: p.isForecast ? Math.round(scenarioVal * (avgPrice - avgCost)) : undefined,

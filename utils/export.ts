@@ -130,3 +130,55 @@ export const exportBulkCSV = (dataBySkus: Map<string, ForecastPoint[]>, filename
     document.body.removeChild(link);
   }
 };
+
+export const exportAlerts = (
+  forecast: ForecastPoint[],
+  currentOnHand: number,
+  filename: string
+) => {
+  const headers = ['SKU', 'Current On-Hand', 'Projected Inventory', 'Stockout Risk Date', 'Production (up to date)', 'Demand (up to date)'];
+  
+  // Get all alerts (where inventory dips below safety stock or goes negative)
+  const alerts = forecast.filter(p => 
+    p.isForecast && 
+    p.projectedInventory !== undefined && 
+    p.safetyStock !== undefined && 
+    (p.projectedInventory < 0 || p.projectedInventory < p.safetyStock)
+  );
+
+  const csvRows = alerts.map(alertPoint => {
+    // Calculate total production and demand up to this alert date
+    const forecastUpToAlert = forecast.filter(f => f.isForecast && f.date <= alertPoint.date);
+    const totalProduction = forecastUpToAlert.reduce((sum, f) => sum + (f.incomingProduction || 0), 0);
+    const totalDemand = forecastUpToAlert.reduce((sum, f) => sum + f.forecast, 0);
+
+    return [
+      'Multi-SKU', // Since we don't track SKU in the alert, we use a generic label
+      currentOnHand,
+      alertPoint.projectedInventory ?? 0,
+      alertPoint.date,
+      totalProduction,
+      totalDemand
+    ].map(val => 
+      typeof val === 'string' ? `"${val.replace(/"/g, '""')}"` : val
+    ).join(',');
+  });
+
+  if (csvRows.length === 0) {
+    alert('No inventory alerts to export');
+    return;
+  }
+
+  const csvContent = [headers.join(','), ...csvRows].join('\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  if (link.download !== undefined) {
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `${filename}_alerts.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+};
