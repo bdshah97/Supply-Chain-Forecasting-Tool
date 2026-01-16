@@ -73,6 +73,7 @@ export const calculateSupplyChainMetrics = (
     return {
       ...p,
       date: offsetDate,
+      historical: !p.isForecast ? p.forecast : undefined,  // Show actual values for historical data
       scenarioForecast: p.isForecast ? scenarioVal : undefined,
       safetyStock,
       reorderPoint,
