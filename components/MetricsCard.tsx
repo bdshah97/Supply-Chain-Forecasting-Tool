@@ -1,6 +1,6 @@
 
-import React from 'react';
-import { ArrowUpRight, ArrowDownRight, Minus } from 'lucide-react';
+import React, { useState } from 'react';
+import { ArrowUpRight, ArrowDownRight, Minus, HelpCircle } from 'lucide-react';
 
 interface MetricsCardProps {
   label: string;
@@ -8,17 +8,37 @@ interface MetricsCardProps {
   suffix?: string;
   description: string;
   trend?: 'up' | 'down' | 'neutral';
+  tooltip?: string;
 }
 
-const MetricsCard: React.FC<MetricsCardProps> = ({ label, value, suffix, description, trend }) => {
+const MetricsCard: React.FC<MetricsCardProps> = ({ label, value, suffix, description, trend, tooltip }) => {
+  const [showTooltip, setShowTooltip] = useState(false);
   const isPositive = trend === 'up';
   const isNegative = trend === 'down';
 
   return (
-    <div className="bg-slate-900 p-5 rounded-[2rem] border border-slate-800 shadow-xl transition-all hover:border-indigo-500/50 group relative overflow-hidden">
+    <div className="bg-slate-900 p-5 rounded-[2rem] border border-slate-800 shadow-xl transition-all hover:border-indigo-500/50 group relative">
       <div className="relative z-10">
         <div className="flex justify-between items-start mb-2">
-          <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{label}</p>
+          <div className="flex items-center gap-2">
+            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{label}</p>
+            {tooltip && (
+              <div className="relative">
+                <button
+                  onMouseEnter={() => setShowTooltip(true)}
+                  onMouseLeave={() => setShowTooltip(false)}
+                  className="text-slate-500 hover:text-slate-300 transition-colors"
+                >
+                  <HelpCircle size={12} />
+                </button>
+                {showTooltip && (
+                  <div className="absolute bottom-full left-0 mb-3 w-56 bg-slate-950 border border-slate-700 rounded-lg p-3 text-[9px] text-slate-300 z-[9999] shadow-2xl pointer-events-auto">
+                    {tooltip}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
           {trend && (
             <div className={`p-1 rounded-lg ${isPositive ? 'text-emerald-400 bg-emerald-500/10' : isNegative ? 'text-orange-400 bg-orange-500/10' : 'text-slate-500 bg-slate-800'}`}>
               {isPositive ? <ArrowUpRight size={12} /> : isNegative ? <ArrowDownRight size={12} /> : <Minus size={12} />}

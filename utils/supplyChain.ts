@@ -12,6 +12,84 @@ export const getZScore = (serviceLevel: number): number => {
   return 0.5;
 };
 
+/**
+ * Per-SKU supply chain metrics calculation with SKU-specific pricing
+ * This should be called once per SKU with that SKU's attributes for accurate financial calculations
+ */
+export const calculateSupplyChainMetricsPerSku = (
+  forecast: ForecastPoint[],
+  sku: string,
+  historicalStdDev: number,
+  leadTimeDays: number,
+  serviceLevel: number,
+  onHand: number,
+  skuAttribute: ProductAttribute | undefined,
+  scenarios: Scenario[] = [],
+  showOffset: boolean = false,
+  volatilityMultiplier: number = 0,
+  productionPlans: ProductionPlan[] = []
+): ForecastPoint[] => {
+  const z = getZScore(serviceLevel);
+  
+  const adjustedLeadTime = leadTimeDays * (1 + volatilityMultiplier);
+  const leadTimePeriods = adjustedLeadTime / 30;
+  
+  const safetyStock = Math.round(z * historicalStdDev * Math.sqrt(leadTimePeriods));
+  
+  const forecastOnly = forecast.filter(f => f.isForecast);
+  const forecastAvg = forecastOnly.reduce((sum, f) => sum + f.forecast, 0) / (forecastOnly.length || 1);
+  const avgDailyDemand = forecastAvg / 30;
+  const reorderPoint = Math.round((avgDailyDemand * adjustedLeadTime) + safetyStock);
+
+  // Use SKU-specific pricing from attributes
+  const skuPrice = skuAttribute?.sellingPrice ?? 150;
+  const skuCost = skuAttribute?.unitCost ?? 100;
+
+  let runningInventory = onHand;
+  let forecastCounter = 0;
+
+  return forecast.map(p => {
+    let scenarioVal = p.forecast;
+    if (p.isForecast) {
+      forecastCounter++;
+      const activeScenario = scenarios.find(s => s.month === forecastCounter);
+      if (activeScenario) scenarioVal = Math.round(scenarioVal * activeScenario.multiplier);
+      runningInventory -= scenarioVal;
+    }
+
+    // Filter production plans for this specific SKU
+    const incomingProduction = productionPlans
+      .filter(plan => plan.sku === sku && plan.date === p.date)
+      .reduce((sum, plan) => sum + plan.quantity, 0);
+    
+    if (incomingProduction > 0) {
+      runningInventory += incomingProduction;
+    }
+
+    let offsetDate = p.date;
+    if (showOffset && p.isForecast) {
+      const d = new Date(p.date);
+      d.setDate(d.getDate() - leadTimeDays);
+      offsetDate = d.toISOString().split('T')[0];
+    }
+
+    return {
+      ...p,
+      date: offsetDate,
+      sku,
+      historical: !p.isForecast ? p.forecast : undefined,
+      scenarioForecast: p.isForecast ? scenarioVal : undefined,
+      safetyStock,
+      reorderPoint,
+      projectedInventory: p.isForecast ? runningInventory : onHand,
+      incomingProduction: incomingProduction > 0 ? incomingProduction : undefined,
+      projectedRevenue: p.isForecast ? Math.round(scenarioVal * skuPrice) : undefined,
+      projectedMargin: p.isForecast ? Math.round(scenarioVal * (skuPrice - skuCost)) : undefined,
+      inventoryValue: Math.round((p.isForecast ? runningInventory : onHand) * skuCost)
+    };
+  });
+};
+
 export const calculateSupplyChainMetrics = (
   forecast: ForecastPoint[],
   historicalStdDev: number,

@@ -26,7 +26,7 @@ const getZMultiplier = (conf: number) => {
  * Based on data characteristics: coefficient of variation, early sparsity, and trend strength
  */
 export const detectHWMethod = (values: number[]): 'additive' | 'multiplicative' => {
-  if (values.length < 4) return 'multiplicative'; // Default for very small datasets
+  if (values.length < 4) return 'additive'; // Default for very small datasets
   
   const n = values.length;
   const mean = values.reduce((a, b) => a + b, 0) / n;
@@ -34,6 +34,12 @@ export const detectHWMethod = (values: number[]): 'additive' | 'multiplicative' 
   // 1. Coefficient of Variation (volatility relative to mean)
   const stdDev = getStdDev(values);
   const cv = mean > 0 ? stdDev / mean : 0;
+  
+  // **NEW: Check for low-volume OR high-volatility SKUs** - these MUST use additive
+  // Low volume (< 1000 avg) OR extreme volatility (CV > 0.8) = use additive
+  if (mean < 1000 || cv > 0.8) {
+    return 'additive';
+  }
   
   // 2. Early Sparsity (% of very low/zero values in first 25% of data)
   const earlyDataSize = Math.ceil(n * 0.25);
