@@ -39,24 +39,17 @@ const normalizeDateFormat = (dateStr: any): string => {
   if (!dateStr) return '';
   
   try {
-    // If it's a Date object, convert to string
+    // Always try to parse as string first to avoid timezone issues
+    let dateString = dateStr;
+    
     if (dateStr instanceof Date) {
-      const y = dateStr.getFullYear();
-      const m = String(dateStr.getMonth() + 1).padStart(2, '0');
-      return `${y}-${m}-01`;
+      // Format Date object as ISO string
+      dateString = dateStr.toISOString().split('T')[0];
     }
     
-    // If it's a string, parse it
-    const dateObj = new Date(dateStr);
-    if (!isNaN(dateObj.getTime())) {
-      const y = dateObj.getFullYear();
-      const m = String(dateObj.getMonth() + 1).padStart(2, '0');
-      return `${y}-${m}-01`;
-    }
-    
-    // Try manual parsing of YYYY-MM-DD format
-    if (typeof dateStr === 'string') {
-      const parts = dateStr.split('-');
+    // Parse YYYY-MM-DD format string
+    if (typeof dateString === 'string') {
+      const parts = dateString.split('-');
       if (parts.length >= 2) {
         const year = parseInt(parts[0], 10);
         const month = parseInt(parts[1], 10);
@@ -73,27 +66,52 @@ const normalizeDateFormat = (dateStr: any): string => {
   return '';
 };
 
+// Helper: Parse date in multiple formats (M/D/YYYY, MM/DD/YYYY, YYYY-MM-DD, MM-DD-YYYY)
+const parseDate = (dateStr: string): string => {
+  if (!dateStr) return '';
+  
+  dateStr = dateStr.trim();
+  
+  // Try YYYY-MM-DD format (already normalized)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return dateStr;
+  }
+  
+  // Try M/D/YYYY, MM/DD/YYYY, M/DD/YYYY, MM/D/YYYY (slash format)
+  const slashMatch = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (slashMatch) {
+    const month = slashMatch[1].padStart(2, '0');
+    const day = slashMatch[2].padStart(2, '0');
+    const year = slashMatch[3];
+    return `${year}-${month}-${day}`;
+  }
+  
+  // Try MM-DD-YYYY, M-D-YYYY (dash format)
+  const dashMatch = dateStr.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if (dashMatch) {
+    const month = dashMatch[1].padStart(2, '0');
+    const day = dashMatch[2].padStart(2, '0');
+    const year = dashMatch[3];
+    return `${year}-${month}-${day}`;
+  }
+  
+  // Try Date constructor as fallback for other formats
+  const dateObj = new Date(dateStr);
+  if (!isNaN(dateObj.getTime())) {
+    const year = dateObj.getFullYear();
+    const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const day = String(dateObj.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  
+  return '';
+};
+
 // Helper: Format date for display (ensures consistent date formatting)
 const formatDateForDisplay = (dateStr: any): string => {
   if (!dateStr) return '';
   
-  // Handle if already a Date object
-  if (dateStr instanceof Date) {
-    return `${dateStr.getMonth() + 1}/${dateStr.getFullYear()}`;
-  }
-  
-  // Convert string to Date if possible
-  const dateObj = new Date(dateStr);
-  if (!isNaN(dateObj.getTime())) {
-    return `${dateObj.getMonth() + 1}/${dateObj.getFullYear()}`;
-  }
-  
-  // If already in MM/YYYY format, return as-is
-  if (typeof dateStr === 'string' && dateStr.includes('/')) {
-    return dateStr;
-  }
-  
-  // Last resort - try manual parsing
+  // First - try manual parsing from YYYY-MM-DD format (timezone-safe)
   const parts = String(dateStr).split('-');
   if (parts.length >= 2) {
     const month = parseInt(parts[1], 10);
@@ -103,8 +121,67 @@ const formatDateForDisplay = (dateStr: any): string => {
     }
   }
   
+  // If already in MM/YYYY format, return as-is
+  if (typeof dateStr === 'string' && dateStr.includes('/')) {
+    return dateStr;
+  }
+  
+  // Handle if already a Date object (fallback)
+  if (dateStr instanceof Date) {
+    return `${dateStr.getMonth() + 1}/${dateStr.getFullYear()}`;
+  }
+  
+  // Convert string to Date if possible (fallback)
+  const dateObj = new Date(dateStr);
+  if (!isNaN(dateObj.getTime())) {
+    return `${dateObj.getMonth() + 1}/${dateObj.getFullYear()}`;
+  }
+  
   return '';
 };
+
+// Helper: Filter comparison data to 6 months before forecast start date, skipping the immediate month (for quality page)
+const getQualityPageData = (comparisonData: any[], forecastStartDate: string): any[] => {
+  if (!comparisonData || comparisonData.length === 0) return [];
+  
+  // Parse forecast start date (format: YYYY-MM-DD)
+  const [forecastYear, forecastMonth, forecastDay] = forecastStartDate.split('-').map(Number);
+  if (!forecastYear || !forecastMonth) return comparisonData;
+  
+  // Calculate 7 months back from forecast start (to get Jan in 8/1/2025 example)
+  let backMonth = forecastMonth - 7;
+  let backYear = forecastYear;
+  if (backMonth <= 0) {
+    backMonth += 12;
+    backYear -= 1;
+  }
+  
+  // Calculate month right before forecast (to exclude)
+  let excludeMonth = forecastMonth - 1;
+  let excludeYear = forecastYear;
+  if (excludeMonth <= 0) {
+    excludeMonth += 12;
+    excludeYear -= 1;
+  }
+  
+  // Filter: include dates >= 7-months-back and < 1-month-before-forecast
+  // This gives us 6 months (e.g., Feb-Jun when forecast is Aug)
+  return comparisonData.filter(d => {
+    const [year, month] = d.date.split('-').map(Number);
+    if (!year || !month) return false;
+    
+    // Date must be >= back window start (7 months back)
+    if (year < backYear) return false;
+    if (year === backYear && month < backMonth) return false;
+    
+    // Date must be < month right before forecast (exclude that month)
+    if (year > excludeYear) return false;
+    if (year === excludeYear && month >= excludeMonth) return false;
+    
+    return true;
+  });
+};
+
 
 const METHOD_DESCRIPTIONS: Record<ForecastMethodology, string> = {
   [ForecastMethodology.HOLT_WINTERS]: "Triple exponential smoothing (Level, Trend, Seasonality). Use multiplicative for steady-state products with consistent patterns, additive for growth ramp-ups or sparse data.",
@@ -397,7 +474,7 @@ const App: React.FC = () => {
   });
   
   const [committedSettings, setCommittedSettings] = useState({ filters: { ...filters }, horizon: draftHorizon, industryPrompt: draftIndustryPrompt, audience: draftAudience, triggerToken: 0 });
-  const [forecastStartMonth, setForecastStartMonth] = useState('2025-08');
+  const [forecastStartMonth, setForecastStartMonth] = useState('2025-08-01');
   const [activeTab, setActiveTab] = useState<'future' | 'quality' | 'inventory' | 'financials' | 'pareto' | 'volatility'>('future');
   
   const [aiInsight, setAiInsight] = useState('Analyze context to generate insights...');
@@ -411,6 +488,7 @@ const App: React.FC = () => {
   const [reportData, setReportData] = useState<OnePagerData | null>(null);
   const [isReportLoading, setIsReportLoading] = useState(false);
   const [chartZoom, setChartZoom] = useState({ startIndex: 0, endIndex: 0 });
+  const [backtestChartZoom, setBacktestChartZoom] = useState({ startIndex: 0, endIndex: 0 });
   const [historicalDataEndDate, setHistoricalDataEndDate] = useState('2024-05-01'); // End date for historical data filtering (matches SAMPLE_DATA end date)
   const chartContainerRef = useRef<HTMLDivElement>(null);
 
@@ -486,7 +564,7 @@ const App: React.FC = () => {
                 const p = line.split(',').map(s => s.trim()); 
                 if (idx < 2) console.log(`  📝 Row ${idx}: ${p.join(' | ')}`); // Log first 2 data rows
                 return { 
-                  date: normalizeDateFormat(p[2]),  // Normalize date to YYYY-MM-01 format
+                  date: normalizeDateFormat(parseDate(p[2])),  // Parse multiple date formats, then normalize
                   sku: p[1],   // Column 1 is the SKU
                   category: p[0],  // Column 0 is the category
                   quantity: parseInt(p[3]) || 0,  // Column 3 is the quantity
@@ -500,7 +578,7 @@ const App: React.FC = () => {
               console.log(`✅ Processed ${newData.length} hist records (chunk ${startIdx}-${endIdx}):`, newData.slice(0, 2)); // Log first 2 records
             } else if (startIdx === 1) {
               // Show error only on first chunk if no valid data found
-              setUploadError({ type: 'hist', message: 'Sales CSV format error. Expected: category, sku, date (YYYY-MM-DD), quantity' });
+              setUploadError({ type: 'hist', message: 'Sales CSV format error. Expected: category, sku, date (YYYY-MM-DD, M/D/YYYY, or MM/DD/YYYY), quantity' });
               console.warn(`⚠️ No valid hist records found. Check format: category, sku, date, quantity`);
             }
           } else if (type === 'inv') {
@@ -1047,24 +1125,21 @@ const App: React.FC = () => {
       }
 
       // Calculate test period: 12 months back from historicalDataEndDate, minus 1 month buffer (= 6-month test window)
-      const endDateObj = new Date(historicalDataEndDate);
-      endDateObj.setDate(1); // Normalize to 1st of month to avoid day-of-month issues
+      // Use forecastStartMonth as anchor point for backtest window
+      // Parse as YYYY-MM-DD format (from date input) and extract year/month
+      const [forecastYear, forecastMonth] = forecastStartMonth.substring(0, 7).split('-');
+      const forecastDate = new Date(parseInt(forecastYear), parseInt(forecastMonth) - 1, 1, 0, 0, 0, 0);
       
-      const testEndDate = new Date(endDateObj);
-      testEndDate.setMonth(testEndDate.getMonth() - 1); // Skip last month (1 month buffer)
+      const testEndDate = new Date(parseInt(forecastYear), parseInt(forecastMonth) - 1 - 1, 1, 0, 0, 0, 0); // 1 month before forecast start
       const testEndStr = testEndDate.toISOString().split('T')[0];
       
-      const testStartDate = new Date(endDateObj);
-      testStartDate.setMonth(testStartDate.getMonth() - 7); // Go back 7 months (= 6 month test window after skipping month)
+      const testStartDate = new Date(parseInt(forecastYear), parseInt(forecastMonth) - 1 - 12, 1, 0, 0, 0, 0); // 12 months before forecast start = 12-month window
       const testStartStr = testStartDate.toISOString().split('T')[0];
 
-      const trainingEndDate = new Date(endDateObj);
-      trainingEndDate.setMonth(trainingEndDate.getMonth() - 7); // Training ends where test begins
-      const trainingEndStr = trainingEndDate.toISOString().split('T')[0];
-
+      
       console.log(`📊 Backtesting for SKUs: [${uniqueSkus.join(', ')}]`);
-      console.log(`📅 Training period: from earliest data to ${trainingEndStr}`);
-      console.log(`📅 Test period: ${testStartStr} to ${testEndStr} (6 months, 1 month buffer excluded)`);
+      console.log(`📅 forecastStartMonth: ${forecastStartMonth}, Parsed as: ${forecastDate.toISOString().split('T')[0]}`);
+      console.log(`📅 Test period: ${testStartStr} to ${testEndStr} (12 months anchored on forecastStartMonth)`);
 
       // Per-SKU, per-method forecast data (12 months)
       const skuMethodForecasts = new Map<string, Map<string, any>>();
@@ -1078,7 +1153,8 @@ const App: React.FC = () => {
       ];
 
       const testStartTime = new Date(testStartStr).getTime();
-      const testEndTime = new Date(testEndStr).getTime();
+      // Extend testEndTime by 24 hours (add milliseconds) to include the full end month
+      const testEndTime = new Date(testEndStr).getTime() + (24 * 60 * 60 * 1000);
 
       // Phase 1: Calculate all 4 methods for each SKU
       uniqueSkus.forEach(sku => {
@@ -1090,6 +1166,8 @@ const App: React.FC = () => {
           console.log(`⚠️ SKU ${sku}: Not enough data (${skuData.length} points)`);
           return;
         }
+
+        console.log(`📊 SKU ${sku} data range: ${skuData[0].date} to ${skuData[skuData.length - 1].date}`);
 
         // Training data: everything before test start
         const trainData = skuData.filter(d => new Date(d.date).getTime() < testStartTime);
@@ -1103,11 +1181,11 @@ const App: React.FC = () => {
         
         const skuMethods = new Map<string, any>();
         
-        // For each methodology, generate 12-month forecast
+        // For each methodology, generate 13-month forecast (12-month test window + 1 month buffer)
         allMethods.forEach(method => {
           let forecast = calculateForecast(
             trainData,
-            12, // Always forecast 12 months
+            13, // Forecast 13 months to cover full 12-month test window
             trainEndDate,
             'monthly',
             committedSettings.filters.confidenceLevel,
@@ -1140,7 +1218,12 @@ const App: React.FC = () => {
         });
 
         skuMethodForecasts.set(sku, skuMethods);
-        console.log(`✅ SKU ${sku}: Calculated all 4 methodologies (12-month forecast)`);
+        const methodData = skuMethods.get(ForecastMethodology.HOLT_WINTERS);
+        if (methodData) {
+          console.log(`✅ SKU ${sku}: Calculated all 4 methodologies (13-month forecast). Dates: ${methodData.dates[0]} to ${methodData.dates[methodData.dates.length - 1]} (${methodData.dates.length} points)`);
+        } else {
+          console.log(`✅ SKU ${sku}: Calculated all 4 methodologies (13-month forecast)`);
+        }
       });
 
       if (skuMethodForecasts.size === 0) {
@@ -1254,7 +1337,8 @@ const App: React.FC = () => {
         }
       }
 
-      // Phase 3: Build comparison data for chart (6-month window, aggregated across SKUs)
+      // Phase 3: Build comparison data for chart (12-month window, aggregated across SKUs)
+      // Include ALL forecast dates within test window, even if actual data is missing
       const comparisonByDate = new Map<string, {actual: number, forecast: number}>();
 
       skuMethodForecasts.forEach((skuMethods, sku) => {
@@ -1279,11 +1363,120 @@ const App: React.FC = () => {
         .map(([date, {actual, forecast}]) => ({date, actual, forecast}))
         .sort((a, b) => a.date.localeCompare(b.date));
 
+      if (comparisonData.length > 0) {
+        console.log(`📊 Comparison data: ${comparisonData.length} dates`);
+        console.log(`   First: ${comparisonData[0].date}, Last: ${comparisonData[comparisonData.length - 1].date}`);
+      }
+
+      // Phase 4: Calculate metrics for 6-month quality page window
+      const qualityPageData = comparisonData.filter(d => {
+        const [year, month] = d.date.split('-').map(Number);
+        const [forecastYear, forecastMonth] = forecastStartMonth.substring(0, 7).split('-').map(Number);
+        if (!year || !month || !forecastYear || !forecastMonth) return false;
+        
+        // Calculate 7 months back and exclude month (same logic as getQualityPageData)
+        let backMonth = forecastMonth - 7;
+        let backYear = forecastYear;
+        if (backMonth <= 0) {
+          backMonth += 12;
+          backYear -= 1;
+        }
+        
+        let excludeMonth = forecastMonth - 1;
+        let excludeYear = forecastYear;
+        if (excludeMonth <= 0) {
+          excludeMonth += 12;
+          excludeYear -= 1;
+        }
+        
+        if (year < backYear) return false;
+        if (year === backYear && month < backMonth) return false;
+        if (year > excludeYear) return false;
+        if (year === excludeYear && month >= excludeMonth) return false;
+        
+        return true;
+      });
+
+      // Calculate aggregated metrics for 6-month window
+      let qualityPageMetrics: any = null;
+      const qualityPageActuals = qualityPageData.map(d => d.actual);
+      const qualityPageForecasts = qualityPageData.map(d => d.forecast);
+      
+      if (qualityPageActuals.length > 0) {
+        const qualityTotal = qualityPageActuals.reduce((a, b) => a + b, 0);
+        const qualityForecastTotal = qualityPageForecasts.reduce((a, b) => a + b, 0);
+
+        let wMAPENum = 0, wMAPEDen = 0;
+        qualityPageActuals.forEach((actual, i) => {
+          wMAPENum += Math.abs(actual - qualityPageForecasts[i]);
+          wMAPEDen += Math.abs(actual);
+        });
+        const mape = wMAPEDen > 0 ? (wMAPENum / wMAPEDen) * 100 : 0;
+
+        let sumSqErr = 0;
+        qualityPageActuals.forEach((actual, i) => {
+          sumSqErr += Math.pow(actual - qualityPageForecasts[i], 2);
+        });
+        const rmse = Math.sqrt(sumSqErr / qualityPageActuals.length);
+
+        const accuracy = Math.max(0, Math.min(100, (1 - Math.abs(qualityTotal - qualityForecastTotal) / Math.max(qualityTotal, 1)) * 100));
+        const bias = ((qualityForecastTotal - qualityTotal) / Math.max(qualityTotal, 1)) * 100;
+
+        qualityPageMetrics = { accuracy, mape, rmse, bias };
+        console.log(`📋 Quality Page Metrics (6-month): Accuracy=${accuracy.toFixed(1)}%, MAPE=${mape.toFixed(1)}%, RMSE=${rmse.toFixed(0)}, Bias=${bias.toFixed(1)}%`);
+      }
+
+      // Calculate method metrics for 6-month quality page window
+      const qualityPageMethodMetrics = new Map<string, any>();
+      allMethods.forEach(method => {
+        const methodActuals: number[] = [];
+        const methodForecasts: number[] = [];
+
+        skuMethodForecasts.forEach((skuMethods, sku) => {
+          const methodData = skuMethods.get(method);
+          if (!methodData) return;
+
+          methodData.dates.forEach((date, idx) => {
+            const normalized = normalizeDateFormat(date);
+            const qpData = qualityPageData.find(d => d.date === normalized);
+            if (qpData) {
+              methodActuals.push(methodData.actuals[idx] || 0);
+              methodForecasts.push(methodData.forecasts[idx] || 0);
+            }
+          });
+        });
+
+        if (methodActuals.length > 0) {
+          const methodTotal = methodActuals.reduce((a, b) => a + b, 0);
+          const methodForecastTotal = methodForecasts.reduce((a, b) => a + b, 0);
+          
+          let wMAPENum = 0, wMAPEDen = 0;
+          methodActuals.forEach((actual, i) => {
+            wMAPENum += Math.abs(actual - methodForecasts[i]);
+            wMAPEDen += Math.abs(actual);
+          });
+          const mape = wMAPEDen > 0 ? (wMAPENum / wMAPEDen) * 100 : 0;
+
+          let sumSqErr = 0;
+          methodActuals.forEach((actual, i) => {
+            sumSqErr += Math.pow(actual - methodForecasts[i], 2);
+          });
+          const rmse = Math.sqrt(sumSqErr / methodActuals.length);
+
+          const accuracy = Math.max(0, Math.min(100, (1 - Math.abs(methodTotal - methodForecastTotal) / Math.max(methodTotal, 1)) * 100));
+          const bias = ((methodForecastTotal - methodTotal) / Math.max(methodTotal, 1)) * 100;
+
+          qualityPageMethodMetrics.set(method, { accuracy, mape, rmse, bias });
+        }
+      });
+
       return {
         skuMethodForecasts,
         testWindow: { startDate: testStartStr, endDate: testEndStr, skipFirstMonth: true },
         aggregatedMetrics,
         methodMetrics,
+        qualityPageMetrics,
+        qualityPageMethodMetrics,
         comparisonData,
         worstSkus: worstSkusGlobal
       };
@@ -1294,6 +1487,8 @@ const App: React.FC = () => {
         testWindow: { startDate: '', endDate: '', skipFirstMonth: true },
         aggregatedMetrics: null,
         methodMetrics: new Map(),
+        qualityPageMetrics: null,
+        qualityPageMethodMetrics: new Map(),
         comparisonData: [],
         worstSkus: worstSkusGlobal
       };
@@ -1373,14 +1568,46 @@ const App: React.FC = () => {
   };
 
   const handleExportBacktestDetail = () => {
-    // Export detailed backtest comparison: Actual vs all 4 method forecasts for each SKU and date
+    // Export detailed backtest comparison for 6-month quality page window only
     if (!backtestResults.skuMethodForecasts || backtestResults.skuMethodForecasts.size === 0) {
       alert('No backtest data to export');
       return;
     }
 
-    const testStartTime = new Date(backtestResults.testWindow.startDate).getTime();
-    const testEndTime = new Date(backtestResults.testWindow.endDate).getTime();
+    // Filter to 6-month quality page window
+    const qualityPageDates = new Set<string>();
+    const [forecastYear, forecastMonth] = forecastStartMonth.substring(0, 7).split('-').map(Number);
+    
+    let backMonth = forecastMonth - 7;
+    let backYear = forecastYear;
+    if (backMonth <= 0) {
+      backMonth += 12;
+      backYear -= 1;
+    }
+    
+    let excludeMonth = forecastMonth - 1;
+    let excludeYear = forecastYear;
+    if (excludeMonth <= 0) {
+      excludeMonth += 12;
+      excludeYear -= 1;
+    }
+
+    backtestResults.skuMethodForecasts.forEach((skuMethods) => {
+      const selectedMethodData = skuMethods.get(committedSettings.filters.methodology);
+      if (!selectedMethodData) return;
+      
+      selectedMethodData.dates.forEach((date) => {
+        const [year, month] = date.split('-').map(Number);
+        if (!year || !month) return;
+        
+        if (year < backYear) return;
+        if (year === backYear && month < backMonth) return;
+        if (year > excludeYear) return;
+        if (year === excludeYear && month >= excludeMonth) return;
+        
+        qualityPageDates.add(normalizeDateFormat(date));
+      });
+    });
 
     const exportRows: string[] = [];
     const csvHeaders = [
@@ -1402,16 +1629,14 @@ const App: React.FC = () => {
 
     // Iterate through each SKU
     backtestResults.skuMethodForecasts.forEach((skuMethods, sku) => {
-      // Get the data for the selected methodology
       const selectedMethodData = skuMethods.get(committedSettings.filters.methodology);
       if (!selectedMethodData) return;
 
-      // Iterate through each date
       selectedMethodData.dates.forEach((date, idx) => {
-        const dt = new Date(date).getTime();
+        const normalized = normalizeDateFormat(date);
         
-        // Only include rows within test window
-        if (dt >= testStartTime && dt <= testEndTime) {
+        // Only include rows within quality page 6-month window
+        if (qualityPageDates.has(normalized)) {
           const actual = selectedMethodData.actuals[idx] || 0;
           
           // Get forecasts from all methods
@@ -1459,7 +1684,7 @@ const App: React.FC = () => {
     
     const now = new Date();
     const exportDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    const filename = `${exportDate}_backtest-detail.csv`;
+    const filename = `${exportDate}_backtest-detail-6m.csv`;
     
     link.href = url;
     link.download = filename;
@@ -1467,7 +1692,7 @@ const App: React.FC = () => {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-    console.log(`✅ Exported backtest detail: ${filename} (${backtestResults.skuMethodForecasts.size} SKUs, ${exportRows.length - 1} data rows)`);
+    console.log(`✅ Exported backtest detail (6-month): ${filename} (${backtestResults.skuMethodForecasts.size} SKUs, ${exportRows.length - 1} data rows)`);
   };
 
   const handleExport = () => {
@@ -1636,6 +1861,13 @@ const App: React.FC = () => {
       setChartZoom({ startIndex: 0, endIndex: Math.max(40, aggregatedForecast.length - 1) });
     }
   }, [aggregatedForecast]);
+
+  // Initialize backtest chart zoom when backtest data changes
+  useEffect(() => {
+    if (backtestResults.comparisonData && backtestResults.comparisonData.length > 0) {
+      setBacktestChartZoom({ startIndex: 0, endIndex: backtestResults.comparisonData.length - 1 });
+    }
+  }, [backtestResults.comparisonData]);
 
   // Handle scroll wheel zoom on chart
   // Initialize chart zoom on aggregatedForecast change
@@ -1938,24 +2170,25 @@ const App: React.FC = () => {
               value={historicalDataEndDate}
               onChange={(e) => {
                 setHistoricalDataEndDate(e.target.value);
-                // Auto-adjust forecast start month to be after this date
+                // Auto-adjust forecast start date to be after this date (1st of next month)
                 const endDate = new Date(e.target.value);
                 const nextMonth = new Date(endDate.getFullYear(), endDate.getMonth() + 1, 1);
-                const forecastMonth = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, '0')}`;
-                setForecastStartMonth(forecastMonth);
+                const forecastDate = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, '0')}-01`;
+                setForecastStartMonth(forecastDate);
               }}
               className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-lg text-[10px] font-bold text-slate-100 outline-none focus:border-emerald-500 transition-all"
             />
             <p className="text-[7px] text-slate-600 font-medium italic">Last date to include in historical analysis</p>
           </div>
           <div className="space-y-2">
-            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block">Forecast Start Month</label>
+            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block">Forecast Start Date</label>
             <input 
-              type="month" 
+              type="date" 
               value={forecastStartMonth}
               onChange={(e) => setForecastStartMonth(e.target.value)}
               className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-lg text-[10px] font-bold text-slate-100 outline-none focus:border-indigo-500 transition-all"
             />
+            <p className="text-[7px] text-slate-600 font-medium italic">Start date for forecast period</p>
           </div>
           <button onClick={handleRunAnalysis} disabled={isLoading} className={`w-full py-3.5 rounded-2xl flex items-center justify-center gap-3 transition-all ${isLoading ? 'bg-slate-800 text-slate-500' : 'bg-indigo-600 hover:bg-indigo-500 text-white font-black text-[11px] uppercase tracking-widest shadow-2xl shadow-indigo-600/10'}`}>
             {isLoading ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} fill="currentColor" />} {isLoading ? "Syncing..." : "Run Analysis"}
@@ -2257,13 +2490,13 @@ const App: React.FC = () => {
                 <div className="bg-gradient-to-r from-indigo-600/20 to-emerald-600/20 border border-indigo-500/30 rounded-2xl p-6 shadow-lg">
                   <div className="flex items-start justify-between gap-4">
                     <div>
-                      <p className="text-xs font-black text-indigo-400 uppercase tracking-widest mb-2">🔍 Backtest Analysis Window</p>
+                      <p className="text-xs font-black text-indigo-400 uppercase tracking-widest mb-2">🔍 Quality Analysis (Last 6 Months)</p>
                       <p className="text-base font-black text-white mb-1">
-                        {backtestResults.testWindow?.startDate} to {backtestResults.testWindow?.endDate}
+                        {getQualityPageData(backtestResults.comparisonData || [], forecastStartMonth)[0]?.date} to {getQualityPageData(backtestResults.comparisonData || [], forecastStartMonth)[getQualityPageData(backtestResults.comparisonData || [], forecastStartMonth).length - 1]?.date}
                       </p>
                       <p className="text-xs text-slate-300 leading-relaxed">
-                        All calculations on this page (accuracy, MAPE, RMSE, bias, methodology benchmarks) are filtered to this 6-month period. 
-                        <br />1-month buffer excluded before historical end date to ensure forecast freshness.
+                        All calculations on this page (accuracy, MAPE, RMSE, bias, methodology benchmarks) are filtered to the 6-month period preceding the forecast start date.
+                        <br />This helps identify recent forecasting quality on the most relevant time window.
                       </p>
                     </div>
                     <button 
@@ -2277,20 +2510,39 @@ const App: React.FC = () => {
                 </div>
 
                 <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                  <MetricsCard label="Accuracy (Backtest)" value={`${backtestResults.aggregatedMetrics?.accuracy.toFixed(1) || 'N/A'}%`} description="Confidence against 6M holdout" tooltip="Percentage of total volume correctly forecast. Higher is better (100% = perfect)." />
-                  <MetricsCard label="MAPE" value={`${backtestResults.aggregatedMetrics?.mape.toFixed(1) || 'N/A'}%`} description="Mean Absolute Percentage Error" tooltip="Average percentage difference between forecast and actual. Lower is better. <10% is excellent." />
-                  <MetricsCard label="RMSE" value={formatNumber(backtestResults.aggregatedMetrics?.rmse || 0)} description="Root Mean Square Error" tooltip="Magnitude of forecast errors in absolute units. Lower is better. Penalizes large errors." />
-                  <MetricsCard label="Bias Score" value={`${(backtestResults.aggregatedMetrics?.bias || 0).toFixed(1)}%`} description="Historical over/under skew" tooltip="% over/under forecast. Negative = under-forecast, Positive = over-forecast. Close to 0% is best." trend={backtestResults.aggregatedMetrics?.bias! > 0 ? "up" : "down"} />
+                  <MetricsCard label="Accuracy (Backtest)" value={`${backtestResults.qualityPageMetrics?.accuracy.toFixed(1) || 'N/A'}%`} description="Confidence against 6M holdout" tooltip="Percentage of total volume correctly forecast. Higher is better (100% = perfect)." />
+                  <MetricsCard label="MAPE" value={`${backtestResults.qualityPageMetrics?.mape.toFixed(1) || 'N/A'}%`} description="Mean Absolute Percentage Error" tooltip="Average percentage difference between forecast and actual. Lower is better. <10% is excellent." />
+                  <MetricsCard label="RMSE" value={formatNumber(backtestResults.qualityPageMetrics?.rmse || 0)} description="Root Mean Square Error" tooltip="Magnitude of forecast errors in absolute units. Lower is better. Penalizes large errors." />
+                  <MetricsCard label="Bias Score" value={`${(backtestResults.qualityPageMetrics?.bias || 0).toFixed(1)}%`} description="Historical over/under skew" tooltip="% over/under forecast. Negative = under-forecast, Positive = over-forecast. Close to 0% is best." trend={backtestResults.qualityPageMetrics?.bias! > 0 ? "up" : "down"} />
                 </section>
                 
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                   <section className="lg:col-span-8 bg-slate-900 p-8 rounded-[2.5rem] border border-slate-800 shadow-2xl">
                     <div className="flex justify-between items-center mb-6">
-                      <h3 className="text-sm font-black text-white uppercase tracking-widest">Historical Model Backtesting (6M Split)</h3>
+                      <h3 className="text-sm font-black text-white uppercase tracking-widest">Backtest Performance</h3>
+                      <button onClick={() => setBacktestChartZoom({ startIndex: 0, endIndex: Math.max(0, (getQualityPageData(backtestResults.comparisonData || [], forecastStartMonth)?.length || 1) - 1) })} className="px-3 py-1.5 bg-slate-800 border border-slate-700 text-slate-400 rounded-lg text-[8px] font-black uppercase tracking-widest hover:bg-slate-700 hover:text-slate-300 transition-all">Reset Zoom</button>
                     </div>
+                    {backtestResults.comparisonData && backtestResults.comparisonData.length > 0 && (
+                      <div className="bg-slate-800/50 p-4 rounded-xl mb-4 border border-slate-700/50">
+                        <div className="flex items-center justify-between gap-2 mb-3">
+                          <label className="text-[9px] font-black uppercase text-slate-400 tracking-widest">Zoom Range</label>
+                          <span className="text-[8px] text-slate-500">{backtestChartZoom.startIndex} - {backtestChartZoom.endIndex}</span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <input type="range" min="0" max={Math.max(0, (getQualityPageData(backtestResults.comparisonData || [], forecastStartMonth)?.length || 1) - 1)} value={backtestChartZoom.startIndex} onChange={(e) => {
+                            const newStart = parseInt(e.target.value);
+                            setBacktestChartZoom(prev => ({ startIndex: newStart, endIndex: Math.max(newStart + 2, prev.endIndex) }));
+                          }} className="flex-1 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500" />
+                          <input type="range" min="0" max={Math.max(0, (getQualityPageData(backtestResults.comparisonData || [], forecastStartMonth)?.length || 1) - 1)} value={backtestChartZoom.endIndex} onChange={(e) => {
+                            const newEnd = parseInt(e.target.value);
+                            setBacktestChartZoom(prev => ({ startIndex: Math.min(newEnd - 2, prev.startIndex), endIndex: newEnd }));
+                          }} className="flex-1 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500" />
+                        </div>
+                      </div>
+                    )}
                     <div className="h-[350px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
-                        <ComposedChart data={[...downsampleData(backtestResults.comparisonData || [], 100)].sort((a, b) => a.date.localeCompare(b.date))}>
+                        <ComposedChart data={[...(getQualityPageData(backtestResults.comparisonData || [], forecastStartMonth).slice(backtestChartZoom.startIndex, backtestChartZoom.endIndex + 1))].sort((a, b) => a.date.localeCompare(b.date))}>
                           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
                           <XAxis 
                             dataKey="date" 
@@ -2299,7 +2551,7 @@ const App: React.FC = () => {
                           />
                           <YAxis tickFormatter={(val) => formatNumber(val)} tick={{fontSize: 12, fill: '#ffffff', fontWeight: 'bold'}} />
                           <Tooltip 
-                            contentStyle={{backgroundColor: '#0f172a', borderRadius: '12px'}} 
+                            contentStyle={{backgroundColor: '#0f172a', borderRadius: '12px', border: '1px solid #334155'}} 
                             content={(props: any) => {
                               if (!props.active || !props.payload || !props.payload.length) return null;
                               const payload = props.payload[0]?.payload;
@@ -2307,22 +2559,23 @@ const App: React.FC = () => {
                               const {actual, forecast} = payload;
                               const accuracy = actual && forecast ? Math.max(0, Math.min(100, (1 - Math.abs(actual - forecast) / Math.max(actual, 1)) * 100)) : 0;
                               return (
-                                <div className="bg-slate-900 border border-slate-700 p-3 rounded-lg text-xs space-y-1">
-                                  <p className="text-slate-400">Historical Actuals: <span className="text-blue-400 font-bold">{formatNumber(actual || 0)}</span></p>
-                                  <p className="text-slate-400">Simulated Forecast: <span className="text-orange-400 font-bold">{formatNumber(forecast || 0)}</span></p>
-                                  <p className="text-slate-400">Accuracy: <span className="text-green-400 font-bold">{accuracy.toFixed(1)}%</span></p>
+                                <div className="bg-slate-950 border border-slate-700 p-3 rounded-lg text-xs space-y-1">
+                                  <p className="text-white font-bold mb-2">{formatDateForDisplay(payload.date)}</p>
+                                  <p className="text-slate-400">Actuals: <span className="text-blue-400 font-bold">{formatNumber(actual || 0)}</span></p>
+                                  <p className="text-slate-400">Forecast ({committedSettings.filters.methodology.split(' (')[0]}): <span className="text-red-400 font-bold">{formatNumber(forecast || 0)}</span></p>
+                                  <p className="text-slate-400">Accuracy: <span className="text-emerald-400 font-bold">{accuracy.toFixed(1)}%</span></p>
                                 </div>
                               );
                             }}
                           />
                           <Legend verticalAlign="top" height={36} iconType="circle" wrapperStyle={{fontSize: '10px', fontWeight: 900, textTransform: 'uppercase'}} />
-                          <Bar dataKey="actual" name="Historical Actuals" fill="#6366f1" radius={[4,4,0,0]} barSize={25} />
-                          <Line type="monotone" dataKey="forecast" name="Simulated Past Forecast" stroke="#fb923c" strokeWidth={3} dot={{r: 4}} />
+                          <Bar dataKey="actual" name="Actual Demand" fill="#3b82f6" radius={[4,4,0,0]} barSize={30} />
+                          <Line type="monotone" dataKey="forecast" name={`Forecast (${committedSettings.filters.methodology.split(' (')[0]})`} stroke="#ef4444" strokeWidth={3} dot={{r: 4}} />
                         </ComposedChart>
                       </ResponsiveContainer>
                     </div>
                   </section>
-                  
+
                   <section className="lg:col-span-4 flex flex-col gap-6">
                     {backtestResults.testWindow?.startDate && (
                       <div className="bg-slate-950 p-4 rounded-xl border border-slate-700">
@@ -2334,7 +2587,7 @@ const App: React.FC = () => {
                     <div className="bg-slate-900 p-6 rounded-[2.5rem] border border-slate-800 shadow-2xl flex-1">
                        <h3 className="text-[10px] font-black text-white uppercase tracking-widest mb-4">Methodology Benchmark</h3>
                        <div className="space-y-3">
-                         {Array.from(backtestResults.methodMetrics.entries())
+                         {Array.from(backtestResults.qualityPageMethodMetrics?.entries() || backtestResults.methodMetrics.entries())
                            .sort((a, b) => (b[1].accuracy || 0) - (a[1].accuracy || 0))
                            .map(([method, metrics]) => (
                            <div key={method} className={`p-3 rounded-xl border ${method === committedSettings.filters.methodology ? 'bg-indigo-600/10 border-indigo-500/30' : 'bg-slate-950 border-slate-800'}`}>

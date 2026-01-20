@@ -47,6 +47,12 @@ Date,SKU,Category,Quantity
 2024-01-15,SKU-102,Automotive,350
 ```
 
+**Date Format Support:** The app accepts dates in multiple formats:
+- `YYYY-MM-DD` (2024-01-15) ✅
+- `M/D/YYYY` (1/15/2024) ✅
+- `MM/DD/YYYY` (01/15/2024) ✅
+- `MM-DD-YYYY` (01-15-2024) ✅
+
 ### Product Attributes
 ```
 SKU,Category,LeadTimeDays,UnitCost,SellingPrice,ServiceLevel
@@ -70,7 +76,7 @@ SKU-102,2024-06-20,450,po
 SKU-102,2024-07-25,700,production
 ```
 **Format Notes:**
-- **Date**: Arrival date in YYYY-MM-DD format
+- **Date**: Arrival date in YYYY-MM-DD, M/D/YYYY, MM/DD/YYYY, or MM-DD-YYYY format
 - **Quantity**: Number of units
 - **Type**: Either `production` (completed goods) or `po` (open purchase order)
 - Supports both past and future production plans for accurate projections
