@@ -136,3 +136,40 @@ export interface OnePagerData {
   recommendations: string[];
   outlook: string;
 }
+
+export interface SkuMethodForecast {
+  dates: string[];           // All 12 forecast month dates
+  forecasts: number[];       // Forecast value per date
+  actuals: number[];         // Actual value per date (where available)
+}
+
+export interface BacktestMetrics {
+  accuracy: number;
+  mape: number;
+  rmse: number;
+  bias: number;
+}
+
+export interface BacktestResults {
+  // Per-SKU, per-method raw forecast data (12-month)
+  skuMethodForecasts: Map<string, Map<string, SkuMethodForecast>>;
+  
+  // Test window definition
+  testWindow: {
+    startDate: string;       // First month of 6-month window (YYYY-MM-DD)
+    endDate: string;         // Last month of 6-month window (YYYY-MM-DD)
+    skipFirstMonth: boolean; // Whether we skip first month after training
+  };
+  
+  // Aggregated metrics across all SKUs for 6-month window
+  aggregatedMetrics: BacktestMetrics | null;
+  
+  // Per-method metrics for the 6-month window
+  methodMetrics: Map<string, BacktestMetrics>;
+  
+  // Comparison data for chart display (6-month window, aggregated)
+  comparisonData: Array<{date: string, actual: number, forecast: number}>;
+  
+  // Worst SKUs (from worstSkusGlobal)
+  worstSkus?: any[];
+}

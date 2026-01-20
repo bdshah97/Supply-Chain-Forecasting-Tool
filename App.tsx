@@ -13,7 +13,7 @@ import {
   Settings, Link as LinkIcon, Info, BookOpen, DollarSign, ShieldAlert, Sparkles, Wand2, Loader2, Gauge, Filter
 } from 'lucide-react';
 import { SKUS, CATEGORIES, SAMPLE_DATA, SAMPLE_ATTRIBUTES, SAMPLE_INVENTORY, DEFAULT_HORIZON } from './constants';
-import { DataPoint, FilterState, TimeInterval, ForecastMethodology, ProductAttribute, InventoryLevel, Scenario, AiProvider, AudienceType, OnePagerData, MarketShock, ProductionPlan } from './types';
+import { DataPoint, FilterState, TimeInterval, ForecastMethodology, ProductAttribute, InventoryLevel, Scenario, AiProvider, AudienceType, OnePagerData, MarketShock, ProductionPlan, BacktestResults } from './types';
 import { calculateForecast, calculateMetrics, cleanAnomalies, applyMarketShocks, detectHWMethod } from './utils/forecasting';
 import { calculateSupplyChainMetrics, calculateSupplyChainMetricsPerSku, runParetoAnalysis } from './utils/supplyChain';
 import { exportToCSV, exportBulkCSV, exportAlerts } from './utils/export';
@@ -630,10 +630,17 @@ const App: React.FC = () => {
 
   // Compute available SKUs from data
   const availableSKUs = useMemo(() => {
-    const skus = Array.from(new Set(data.map(d => d.sku))).sort();
+    let skus = Array.from(new Set(data.map(d => d.sku))).sort();
+    
+    // If real data has been uploaded, exclude sample SKUs from the list
+    if (hasUserUploadedData.hist) {
+      const sampleSkuSet = new Set(SKUS);
+      skus = skus.filter(sku => !sampleSkuSet.has(sku));
+    }
+    
     console.log(`📊 Available SKUs from data: ${skus.join(', ')}`);
     return skus;
-  }, [data]);
+  }, [data, hasUserUploadedData.hist]);
 
   // When real data is uploaded, suggest updating historicalDataEndDate to the latest real data date
   useEffect(() => {
@@ -652,10 +659,18 @@ const App: React.FC = () => {
 
   // Compute available categories from data
   const availableCategories = useMemo(() => {
-    const cats = Array.from(new Set(data.map(d => d.category).filter(c => c))).sort();
+    let filteredData = data;
+    
+    // If real data has been uploaded, exclude sample data
+    if (hasUserUploadedData.hist) {
+      const sampleSkuSet = new Set(SKUS);
+      filteredData = data.filter(d => !sampleSkuSet.has(d.sku));
+    }
+    
+    const cats = Array.from(new Set(filteredData.map(d => d.category).filter(c => c))).sort();
     console.log(`📂 Available categories from data: ${cats.join(', ')}`);
     return ['All', ...cats];
-  }, [data]);
+  }, [data, hasUserUploadedData.hist]);
 
   // Update filter to include available SKUs and handle sample data exclusion
   useEffect(() => {
@@ -1021,23 +1036,51 @@ const App: React.FC = () => {
         : Array.from(new Set(data.map(d => d.sku))).sort();
 
       if (uniqueSkus.length === 0 || data.length < 18) {
-        return { comparisonData: [], metrics: null, modelComparison: [], backtestForecast: [], worstSkus: worstSkusGlobal };
+        return { 
+          skuMethodForecasts: new Map(),
+          testWindow: { startDate: '', endDate: '', skipFirstMonth: true },
+          aggregatedMetrics: null,
+          methodMetrics: new Map(),
+          comparisonData: [],
+          worstSkus: worstSkusGlobal
+        };
       }
 
-      // Calculate test period: last 6 months before historicalDataEndDate
+      // Calculate test period: 12 months back from historicalDataEndDate, minus 1 month buffer (= 6-month test window)
       const endDateObj = new Date(historicalDataEndDate);
+      endDateObj.setDate(1); // Normalize to 1st of month to avoid day-of-month issues
+      
+      const testEndDate = new Date(endDateObj);
+      testEndDate.setMonth(testEndDate.getMonth() - 1); // Skip last month (1 month buffer)
+      const testEndStr = testEndDate.toISOString().split('T')[0];
+      
       const testStartDate = new Date(endDateObj);
-      testStartDate.setMonth(testStartDate.getMonth() - 6);
+      testStartDate.setMonth(testStartDate.getMonth() - 7); // Go back 7 months (= 6 month test window after skipping month)
       const testStartStr = testStartDate.toISOString().split('T')[0];
 
+      const trainingEndDate = new Date(endDateObj);
+      trainingEndDate.setMonth(trainingEndDate.getMonth() - 7); // Training ends where test begins
+      const trainingEndStr = trainingEndDate.toISOString().split('T')[0];
+
       console.log(`📊 Backtesting for SKUs: [${uniqueSkus.join(', ')}]`);
-      console.log(`📅 Test period: ${testStartStr} to ${historicalDataEndDate}`);
+      console.log(`📅 Training period: from earliest data to ${trainingEndStr}`);
+      console.log(`📅 Test period: ${testStartStr} to ${testEndStr} (6 months, 1 month buffer excluded)`);
 
-      // Split data into training and testing for selected SKUs
-      const allTestActuals: number[] = [];
-      const allTestForecasts: number[] = [];
-      const comparisonByDate = new Map<string, {actual: number, forecast: number}>();
+      // Per-SKU, per-method forecast data (12 months)
+      const skuMethodForecasts = new Map<string, Map<string, any>>();
+      
+      // All actuals and forecasts for aggregated metric calculation (6-month window only)
+      const allMethods = [
+        ForecastMethodology.HOLT_WINTERS,
+        ForecastMethodology.PROPHET,
+        ForecastMethodology.ARIMA,
+        ForecastMethodology.LINEAR
+      ];
 
+      const testStartTime = new Date(testStartStr).getTime();
+      const testEndTime = new Date(testEndStr).getTime();
+
+      // Phase 1: Calculate all 4 methods for each SKU
       uniqueSkus.forEach(sku => {
         const skuData = data
           .filter(d => d.sku === sku)
@@ -1048,227 +1091,214 @@ const App: React.FC = () => {
           return;
         }
 
-        // Split: training = before testStart, testing = testStart to historicalDataEndDate
-        const trainData = skuData.filter(d => new Date(d.date).getTime() < new Date(testStartStr).getTime());
-        const testData = skuData.filter(d => {
-          const dt = new Date(d.date).getTime();
-          return dt >= new Date(testStartStr).getTime() && dt <= new Date(historicalDataEndDate).getTime();
-        });
-
-        if (trainData.length === 0 || testData.length === 0) {
-          console.log(`⚠️ SKU ${sku}: Insufficient train (${trainData.length}) or test (${testData.length}) data`);
+        // Training data: everything before test start
+        const trainData = skuData.filter(d => new Date(d.date).getTime() < testStartTime);
+        if (trainData.length < 6) {
+          console.log(`⚠️ SKU ${sku}: Insufficient training data (${trainData.length} points)`);
           return;
         }
 
-        // Generate forecast for test period
+        // Get all actual data points (for matching with forecasts)
         const trainEndDate = trainData[trainData.length - 1].date;
-        let skuForecast = calculateForecast(
-          trainData,
-          testData.length,
-          trainEndDate,
-          'monthly',
-          committedSettings.filters.confidenceLevel,
-          committedSettings.filters.methodology,
-          hwMethod,
-          autoDetectHW
-        );
-
-        // Apply market adjustments
-        if (committedSettings.filters.includeExternalTrends && marketAdj) {
-          skuForecast = skuForecast.map(p => p.isForecast ? { ...p, forecast: Math.round(p.forecast * marketAdj.multiplier) } : p);
-        }
-
-        // Build forecast map
-        const forecastMap = new Map<string, number>();
-        skuForecast.filter(f => f.isForecast).forEach(f => {
-          forecastMap.set(f.date, f.forecast || 0);
-        });
-
-        // Compare actual vs forecast
-        testData.forEach(d => {
-          const normalizedDate = normalizeDateFormat(d.date);
-          const forecastVal = forecastMap.get(normalizedDate) || 0;
-          
-          allTestActuals.push(d.quantity);
-          allTestForecasts.push(forecastVal);
-
-          if (!comparisonByDate.has(normalizedDate)) {
-            comparisonByDate.set(normalizedDate, {actual: 0, forecast: 0});
-          }
-          const entry = comparisonByDate.get(normalizedDate)!;
-          entry.actual += d.quantity;
-          entry.forecast += forecastVal;
-        });
-
-        console.log(`✅ SKU ${sku}: ${trainData.length} train points, ${testData.length} test points`);
-      });
-
-      if (allTestActuals.length === 0) {
-        return { comparisonData: [], metrics: null, modelComparison: [], backtestForecast: [], worstSkus: worstSkusGlobal };
-      }
-
-      // Calculate aggregate metrics
-      const totalActual = allTestActuals.reduce((a, b) => a + b, 0);
-      const totalForecast = allTestForecasts.reduce((a, b) => a + b, 0);
-
-      // Accuracy: % of total volume correct (clamped to 0-100)
-      const accuracy = Math.max(0, Math.min(100, (1 - Math.abs(totalActual - totalForecast) / Math.max(totalActual, 1)) * 100));
-
-      // Log per-SKU details for debugging
-      console.log(`📊 Backtest Aggregate: Total Actual=${totalActual}, Total Forecast=${totalForecast}, Raw Accuracy=${((1 - Math.abs(totalActual - totalForecast) / Math.max(totalActual, 1)) * 100).toFixed(1)}%, Clamped=${accuracy.toFixed(1)}%`);
-      
-      // Log per-SKU breakdown
-      uniqueSkus.forEach(sku => {
-        const skuData = data
-          .filter(d => d.sku === sku)
-          .sort((a, b) => a.date.localeCompare(b.date));
         
-        const trainData = skuData.filter(d => new Date(d.date).getTime() < new Date(testStartStr).getTime());
-        const testData = skuData.filter(d => {
-          const dt = new Date(d.date).getTime();
-          return dt >= new Date(testStartStr).getTime() && dt <= new Date(historicalDataEndDate).getTime();
-        });
+        const skuMethods = new Map<string, any>();
         
-        if (trainData.length > 0 && testData.length > 0) {
-          const trainEndDate = trainData[trainData.length - 1].date;
-          let skuForecast = calculateForecast(
+        // For each methodology, generate 12-month forecast
+        allMethods.forEach(method => {
+          let forecast = calculateForecast(
             trainData,
-            testData.length,
+            12, // Always forecast 12 months
             trainEndDate,
             'monthly',
             committedSettings.filters.confidenceLevel,
-            committedSettings.filters.methodology,
+            method,
             hwMethod,
             autoDetectHW
           );
-          
+
+          // Apply market adjustments
           if (committedSettings.filters.includeExternalTrends && marketAdj) {
-            skuForecast = skuForecast.map(p => p.isForecast ? { ...p, forecast: Math.round(p.forecast * marketAdj.multiplier) } : p);
+            forecast = forecast.map(p => p.isForecast ? { ...p, forecast: Math.round(p.forecast * marketAdj.multiplier) } : p);
           }
+
+          // Extract forecast values and dates
+          const forecastDates = forecast.filter(f => f.isForecast).map(f => f.date);
+          const forecastVals = forecast.filter(f => f.isForecast).map(f => f.forecast || 0);
           
-          const forecastMap = new Map<string, number>();
-          skuForecast.filter(f => f.isForecast).forEach(f => {
-            forecastMap.set(f.date, f.forecast || 0);
+          // Match actual values to forecast dates
+          const actualVals = forecastDates.map(fDate => {
+            const normalized = normalizeDateFormat(fDate);
+            const match = skuData.find(d => normalizeDateFormat(d.date) === normalized);
+            return match ? match.quantity : 0;
           });
-          
-          let skuActualSum = 0, skuForecastSum = 0;
-          testData.forEach(d => {
-            const normalizedDate = normalizeDateFormat(d.date);
-            const forecastVal = forecastMap.get(normalizedDate) || 0;
-            skuActualSum += d.quantity;
-            skuForecastSum += forecastVal;
+
+          skuMethods.set(method, {
+            dates: forecastDates,
+            forecasts: forecastVals,
+            actuals: actualVals
           });
-          
-          const skuAccuracy = (1 - Math.abs(skuActualSum - skuForecastSum) / Math.max(skuActualSum, 1)) * 100;
-          console.log(`  └─ ${sku}: Actual=${skuActualSum}, Forecast=${skuForecastSum}, Accuracy=${skuAccuracy.toFixed(1)}%`);
-        }
+        });
+
+        skuMethodForecasts.set(sku, skuMethods);
+        console.log(`✅ SKU ${sku}: Calculated all 4 methodologies (12-month forecast)`);
       });
 
-      // wMAPE: weighted mean absolute percentage error
-      let wMAPENum = 0;
-      let wMAPEDen = 0;
-      allTestActuals.forEach((actual, i) => {
-        wMAPENum += Math.abs(actual - allTestForecasts[i]);
-        wMAPEDen += Math.abs(actual);
-      });
-      const wMAPE = wMAPEDen > 0 ? (wMAPENum / wMAPEDen) * 100 : 0;
+      if (skuMethodForecasts.size === 0) {
+        return {
+          skuMethodForecasts: new Map(),
+          testWindow: { startDate: testStartStr, endDate: testEndStr, skipFirstMonth: true },
+          aggregatedMetrics: null,
+          methodMetrics: new Map(),
+          comparisonData: [],
+          worstSkus: worstSkusGlobal
+        };
+      }
 
-      // RMSE: root mean square error
-      let sumSqErr = 0;
-      allTestActuals.forEach((actual, i) => {
-        sumSqErr += Math.pow(actual - allTestForecasts[i], 2);
-      });
-      const rmse = Math.sqrt(sumSqErr / allTestActuals.length);
+      // Phase 2: Calculate metrics for 6-month test window across all methods
+      const methodMetrics = new Map<string, any>();
+      let aggregatedActuals: number[] = [];
+      let aggregatedForecasts: number[] = [];
 
-      // Bias: % over/under forecast
-      const bias = ((totalForecast - totalActual) / Math.max(totalActual, 1)) * 100;
-
-      const metrics = { accuracy, mape: wMAPE, rmse, bias };
-
-      // Build comparison data for chart
-      const comparisonData = Array.from(comparisonByDate.entries())
-        .map(([date, {actual, forecast}]) => ({
-          date,
-          actual,
-          forecast,
-          isForecast: true
-        }))
-        .sort((a, b) => a.date.localeCompare(b.date));
-
-      console.log(`💼 Backtest Results: Accuracy=${accuracy.toFixed(1)}%, wMAPE=${wMAPE.toFixed(1)}%, RMSE=${rmse.toFixed(0)}, Bias=${bias.toFixed(1)}%`);
-
-      // Calculate accuracy for all methodologies
-      const methodologyAccuracies = [];
-      const allMethodologies = [
-        ForecastMethodology.HOLT_WINTERS,
-        ForecastMethodology.PROPHET,
-        ForecastMethodology.ARIMA,
-        ForecastMethodology.LINEAR
-      ];
-
-      for (const method of allMethodologies) {
+      allMethods.forEach(method => {
         const methodActuals: number[] = [];
         const methodForecasts: number[] = [];
 
-        uniqueSkus.forEach(sku => {
-          const skuData = data
-            .filter(d => d.sku === sku)
-            .sort((a, b) => a.date.localeCompare(b.date));
+        skuMethodForecasts.forEach((skuMethods, sku) => {
+          const methodData = skuMethods.get(method);
+          if (!methodData) return;
 
-          const trainData = skuData.filter(d => new Date(d.date).getTime() < new Date(testStartStr).getTime());
-          const testData = skuData.filter(d => {
-            const dt = new Date(d.date).getTime();
-            return dt >= new Date(testStartStr).getTime() && dt <= new Date(historicalDataEndDate).getTime();
-          });
-
-          if (trainData.length > 0 && testData.length > 0) {
-            const trainEndDate = trainData[trainData.length - 1].date;
-            let methodForecast = calculateForecast(
-              trainData,
-              testData.length,
-              trainEndDate,
-              'monthly',
-              committedSettings.filters.confidenceLevel,
-              method,
-              hwMethod,
-              autoDetectHW
-            );
-
-            if (committedSettings.filters.includeExternalTrends && marketAdj) {
-              methodForecast = methodForecast.map(p => p.isForecast ? { ...p, forecast: Math.round(p.forecast * marketAdj.multiplier) } : p);
+          // Slice to 6-month test window
+          methodData.dates.forEach((date, idx) => {
+            const dt = new Date(date).getTime();
+            if (dt >= testStartTime && dt <= testEndTime) {
+              methodActuals.push(methodData.actuals[idx] || 0);
+              methodForecasts.push(methodData.forecasts[idx] || 0);
             }
-
-            const forecastMap = new Map<string, number>();
-            methodForecast.filter(f => f.isForecast).forEach(f => {
-              forecastMap.set(f.date, f.forecast || 0);
-            });
-
-            testData.forEach(d => {
-              const normalizedDate = normalizeDateFormat(d.date);
-              const forecastVal = forecastMap.get(normalizedDate) || 0;
-              methodActuals.push(d.quantity);
-              methodForecasts.push(forecastVal);
-            });
-          }
+          });
         });
 
         if (methodActuals.length > 0) {
           const methodTotal = methodActuals.reduce((a, b) => a + b, 0);
           const methodForecastTotal = methodForecasts.reduce((a, b) => a + b, 0);
-          const methodAccuracy = (1 - Math.abs(methodTotal - methodForecastTotal) / Math.max(methodTotal, 1)) * 100;
-          methodologyAccuracies.push({
-            method,
-            accuracy: Math.max(0, Math.min(100, methodAccuracy))
+          
+          // Calculate metrics
+          let wMAPENum = 0, wMAPEDen = 0;
+          methodActuals.forEach((actual, i) => {
+            wMAPENum += Math.abs(actual - methodForecasts[i]);
+            wMAPEDen += Math.abs(actual);
           });
+          const mape = wMAPEDen > 0 ? (wMAPENum / wMAPEDen) * 100 : 0;
+
+          let sumSqErr = 0;
+          methodActuals.forEach((actual, i) => {
+            sumSqErr += Math.pow(actual - methodForecasts[i], 2);
+          });
+          const rmse = Math.sqrt(sumSqErr / methodActuals.length);
+
+          const accuracy = Math.max(0, Math.min(100, (1 - Math.abs(methodTotal - methodForecastTotal) / Math.max(methodTotal, 1)) * 100));
+          const bias = ((methodForecastTotal - methodTotal) / Math.max(methodTotal, 1)) * 100;
+
+          methodMetrics.set(method, { accuracy, mape, rmse, bias });
+
+          // Accumulate for aggregated metrics
+          aggregatedActuals.push(...methodActuals);
+          aggregatedForecasts.push(...methodForecasts);
+
+          console.log(`  └─ ${method}: Accuracy=${accuracy.toFixed(1)}%, MAPE=${mape.toFixed(1)}%, RMSE=${rmse.toFixed(0)}, Bias=${bias.toFixed(1)}%`);
+        }
+      });
+
+      // Calculate aggregated metrics (using selected methodology's 6-month window)
+      let aggregatedMetrics: any = null;
+      const selectedMethodData = skuMethodForecasts.values().next().value?.get(committedSettings.filters.methodology);
+      if (selectedMethodData) {
+        const selectedActuals: number[] = [];
+        const selectedForecasts: number[] = [];
+
+        skuMethodForecasts.forEach((skuMethods, sku) => {
+          const methodData = skuMethods.get(committedSettings.filters.methodology);
+          if (!methodData) return;
+
+          methodData.dates.forEach((date, idx) => {
+            const dt = new Date(date).getTime();
+            if (dt >= testStartTime && dt <= testEndTime) {
+              selectedActuals.push(methodData.actuals[idx] || 0);
+              selectedForecasts.push(methodData.forecasts[idx] || 0);
+            }
+          });
+        });
+
+        if (selectedActuals.length > 0) {
+          const selectedTotal = selectedActuals.reduce((a, b) => a + b, 0);
+          const selectedForecastTotal = selectedForecasts.reduce((a, b) => a + b, 0);
+
+          let wMAPENum = 0, wMAPEDen = 0;
+          selectedActuals.forEach((actual, i) => {
+            wMAPENum += Math.abs(actual - selectedForecasts[i]);
+            wMAPEDen += Math.abs(actual);
+          });
+          const mape = wMAPEDen > 0 ? (wMAPENum / wMAPEDen) * 100 : 0;
+
+          let sumSqErr = 0;
+          selectedActuals.forEach((actual, i) => {
+            sumSqErr += Math.pow(actual - selectedForecasts[i], 2);
+          });
+          const rmse = Math.sqrt(sumSqErr / selectedActuals.length);
+
+          const accuracy = Math.max(0, Math.min(100, (1 - Math.abs(selectedTotal - selectedForecastTotal) / Math.max(selectedTotal, 1)) * 100));
+          const bias = ((selectedForecastTotal - selectedTotal) / Math.max(selectedTotal, 1)) * 100;
+
+          aggregatedMetrics = { accuracy, mape, rmse, bias };
+
+          console.log(`💼 Aggregated (${committedSettings.filters.methodology}): Accuracy=${accuracy.toFixed(1)}%, MAPE=${mape.toFixed(1)}%, RMSE=${rmse.toFixed(0)}, Bias=${bias.toFixed(1)}%`);
         }
       }
 
-      return { comparisonData, metrics, modelComparison: methodologyAccuracies, backtestForecast: comparisonData, worstSkus: worstSkusGlobal };
+      // Phase 3: Build comparison data for chart (6-month window, aggregated across SKUs)
+      const comparisonByDate = new Map<string, {actual: number, forecast: number}>();
+
+      skuMethodForecasts.forEach((skuMethods, sku) => {
+        const methodData = skuMethods.get(committedSettings.filters.methodology);
+        if (!methodData) return;
+
+        methodData.dates.forEach((date, idx) => {
+          const dt = new Date(date).getTime();
+          if (dt >= testStartTime && dt <= testEndTime) {
+            const normalized = normalizeDateFormat(date);
+            if (!comparisonByDate.has(normalized)) {
+              comparisonByDate.set(normalized, {actual: 0, forecast: 0});
+            }
+            const entry = comparisonByDate.get(normalized)!;
+            entry.actual += methodData.actuals[idx] || 0;
+            entry.forecast += methodData.forecasts[idx] || 0;
+          }
+        });
+      });
+
+      const comparisonData = Array.from(comparisonByDate.entries())
+        .map(([date, {actual, forecast}]) => ({date, actual, forecast}))
+        .sort((a, b) => a.date.localeCompare(b.date));
+
+      return {
+        skuMethodForecasts,
+        testWindow: { startDate: testStartStr, endDate: testEndStr, skipFirstMonth: true },
+        aggregatedMetrics,
+        methodMetrics,
+        comparisonData,
+        worstSkus: worstSkusGlobal
+      };
     } catch (e) {
       console.error('Error in backtestResults:', e);
-      return { comparisonData: [], metrics: null, modelComparison: [], backtestForecast: [], worstSkus: worstSkusGlobal };
+      return {
+        skuMethodForecasts: new Map(),
+        testWindow: { startDate: '', endDate: '', skipFirstMonth: true },
+        aggregatedMetrics: null,
+        methodMetrics: new Map(),
+        comparisonData: [],
+        worstSkus: worstSkusGlobal
+      };
     }
-  }, [data, committedSettings, hwMethod, autoDetectHW, worstSkusGlobal, historicalDataEndDate, marketAdj]);
+  }, [data, committedSettings, hwMethod, autoDetectHW, historicalDataEndDate, marketAdj]);
 
   const runRca = async () => {
     setIsRcaLoading(true);
@@ -1340,6 +1370,104 @@ const App: React.FC = () => {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
     console.log(`✅ Exported worst SKUs forecast: ${filename} (${worstSkuNames.length} SKUs)`);
+  };
+
+  const handleExportBacktestDetail = () => {
+    // Export detailed backtest comparison: Actual vs all 4 method forecasts for each SKU and date
+    if (!backtestResults.skuMethodForecasts || backtestResults.skuMethodForecasts.size === 0) {
+      alert('No backtest data to export');
+      return;
+    }
+
+    const testStartTime = new Date(backtestResults.testWindow.startDate).getTime();
+    const testEndTime = new Date(backtestResults.testWindow.endDate).getTime();
+
+    const exportRows: string[] = [];
+    const csvHeaders = [
+      'Date',
+      'SKU',
+      'Actual',
+      'HW Forecast',
+      'Prophet Forecast',
+      'ARIMA Forecast',
+      'Linear Forecast',
+      'Selected Method Forecast',
+      'Selected Method',
+      'HW Error %',
+      'Prophet Error %',
+      'ARIMA Error %',
+      'Linear Error %'
+    ].join(',');
+    exportRows.push(csvHeaders);
+
+    // Iterate through each SKU
+    backtestResults.skuMethodForecasts.forEach((skuMethods, sku) => {
+      // Get the data for the selected methodology
+      const selectedMethodData = skuMethods.get(committedSettings.filters.methodology);
+      if (!selectedMethodData) return;
+
+      // Iterate through each date
+      selectedMethodData.dates.forEach((date, idx) => {
+        const dt = new Date(date).getTime();
+        
+        // Only include rows within test window
+        if (dt >= testStartTime && dt <= testEndTime) {
+          const actual = selectedMethodData.actuals[idx] || 0;
+          
+          // Get forecasts from all methods
+          const hwData = skuMethods.get(ForecastMethodology.HOLT_WINTERS);
+          const prophetData = skuMethods.get(ForecastMethodology.PROPHET);
+          const arimaData = skuMethods.get(ForecastMethodology.ARIMA);
+          const linearData = skuMethods.get(ForecastMethodology.LINEAR);
+
+          const hwForecast = hwData?.forecasts[idx] || 0;
+          const prophetForecast = prophetData?.forecasts[idx] || 0;
+          const arimaForecast = arimaData?.forecasts[idx] || 0;
+          const linearForecast = linearData?.forecasts[idx] || 0;
+          const selectedForecast = selectedMethodData.forecasts[idx] || 0;
+
+          // Calculate error percentages
+          const calculateError = (forecast: number, actual: number) => {
+            return actual > 0 ? (((forecast - actual) / actual) * 100).toFixed(1) : '0';
+          };
+
+          const row = [
+            date,
+            sku,
+            actual.toFixed(0),
+            hwForecast.toFixed(0),
+            prophetForecast.toFixed(0),
+            arimaForecast.toFixed(0),
+            linearForecast.toFixed(0),
+            selectedForecast.toFixed(0),
+            committedSettings.filters.methodology.split(' (')[0],
+            calculateError(hwForecast, actual),
+            calculateError(prophetForecast, actual),
+            calculateError(arimaForecast, actual),
+            calculateError(linearForecast, actual)
+          ].join(',');
+          
+          exportRows.push(row);
+        }
+      });
+    });
+
+    const csvContent = exportRows.join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    
+    const now = new Date();
+    const exportDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const filename = `${exportDate}_backtest-detail.csv`;
+    
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    console.log(`✅ Exported backtest detail: ${filename} (${backtestResults.skuMethodForecasts.size} SKUs, ${exportRows.length - 1} data rows)`);
   };
 
   const handleExport = () => {
@@ -2027,7 +2155,7 @@ const App: React.FC = () => {
                           tickFormatter={formatDateForDisplay}
                         />
                         <YAxis 
-                          tickFormatter={(val) => `$${(val / 1000).toFixed(0)}K`} 
+                          tickFormatter={(val) => `$${(val / 1000).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}K`} 
                           tick={{fontSize: 12, fill: '#ffffff', fontWeight: 'bold'}} 
                         />
                         <Tooltip 
@@ -2050,6 +2178,7 @@ const App: React.FC = () => {
                         <Legend 
                           verticalAlign="top" 
                           height={24}
+                          align="right"
                           iconType="square"
                           wrapperStyle={{fontSize: '13px', fontWeight: 900, textTransform: 'uppercase'}}
                         />
@@ -2124,11 +2253,34 @@ const App: React.FC = () => {
 
             {activeTab === 'quality' && (
               <div className="space-y-6 animate-in fade-in duration-500">
+                {/* Prominent Date Range Banner */}
+                <div className="bg-gradient-to-r from-indigo-600/20 to-emerald-600/20 border border-indigo-500/30 rounded-2xl p-6 shadow-lg">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-xs font-black text-indigo-400 uppercase tracking-widest mb-2">🔍 Backtest Analysis Window</p>
+                      <p className="text-base font-black text-white mb-1">
+                        {backtestResults.testWindow?.startDate} to {backtestResults.testWindow?.endDate}
+                      </p>
+                      <p className="text-xs text-slate-300 leading-relaxed">
+                        All calculations on this page (accuracy, MAPE, RMSE, bias, methodology benchmarks) are filtered to this 6-month period. 
+                        <br />1-month buffer excluded before historical end date to ensure forecast freshness.
+                      </p>
+                    </div>
+                    <button 
+                      onClick={handleExportBacktestDetail}
+                      className="flex-shrink-0 px-4 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[9px] font-black uppercase tracking-widest flex items-center gap-2 transition-all shadow-lg shadow-indigo-600/20 whitespace-nowrap"
+                    >
+                      <Download size={14} /> 
+                      Export Detail
+                    </button>
+                  </div>
+                </div>
+
                 <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                  <MetricsCard label="Accuracy (Backtest)" value={`${backtestResults.metrics?.accuracy.toFixed(1)}%`} description="Confidence against 6M holdout" tooltip="Percentage of total volume correctly forecast. Higher is better (100% = perfect)." />
-                  <MetricsCard label="MAPE" value={`${backtestResults.metrics?.mape.toFixed(1)}%`} description="Mean Absolute Percentage Error" tooltip="Average percentage difference between forecast and actual. Lower is better. <10% is excellent." />
-                  <MetricsCard label="RMSE" value={formatNumber(backtestResults.metrics?.rmse || 0)} description="Root Mean Square Error" tooltip="Magnitude of forecast errors in absolute units. Lower is better. Penalizes large errors." />
-                  <MetricsCard label="Bias Score" value={`${(backtestResults.metrics?.bias || 0).toFixed(1)}%`} description="Historical over/under skew" tooltip="% over/under forecast. Negative = under-forecast, Positive = over-forecast. Close to 0% is best." trend={backtestResults.metrics?.bias! > 0 ? "up" : "down"} />
+                  <MetricsCard label="Accuracy (Backtest)" value={`${backtestResults.aggregatedMetrics?.accuracy.toFixed(1) || 'N/A'}%`} description="Confidence against 6M holdout" tooltip="Percentage of total volume correctly forecast. Higher is better (100% = perfect)." />
+                  <MetricsCard label="MAPE" value={`${backtestResults.aggregatedMetrics?.mape.toFixed(1) || 'N/A'}%`} description="Mean Absolute Percentage Error" tooltip="Average percentage difference between forecast and actual. Lower is better. <10% is excellent." />
+                  <MetricsCard label="RMSE" value={formatNumber(backtestResults.aggregatedMetrics?.rmse || 0)} description="Root Mean Square Error" tooltip="Magnitude of forecast errors in absolute units. Lower is better. Penalizes large errors." />
+                  <MetricsCard label="Bias Score" value={`${(backtestResults.aggregatedMetrics?.bias || 0).toFixed(1)}%`} description="Historical over/under skew" tooltip="% over/under forecast. Negative = under-forecast, Positive = over-forecast. Close to 0% is best." trend={backtestResults.aggregatedMetrics?.bias! > 0 ? "up" : "down"} />
                 </section>
                 
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -2172,17 +2324,26 @@ const App: React.FC = () => {
                   </section>
                   
                   <section className="lg:col-span-4 flex flex-col gap-6">
+                    {backtestResults.testWindow?.startDate && (
+                      <div className="bg-slate-950 p-4 rounded-xl border border-slate-700">
+                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">Backtest Window</p>
+                        <p className="text-[10px] text-slate-300">{backtestResults.testWindow.startDate} to {backtestResults.testWindow.endDate}</p>
+                        <p className="text-[8px] text-slate-500 mt-1">6-month holdout period (1-month buffer excluded)</p>
+                      </div>
+                    )}
                     <div className="bg-slate-900 p-6 rounded-[2.5rem] border border-slate-800 shadow-2xl flex-1">
                        <h3 className="text-[10px] font-black text-white uppercase tracking-widest mb-4">Methodology Benchmark</h3>
                        <div className="space-y-3">
-                         {backtestResults.modelComparison.sort((a,b)=>b.accuracy-a.accuracy).map(m => (
-                           <div key={m.method} className={`p-3 rounded-xl border ${m.method === committedSettings.filters.methodology ? 'bg-indigo-600/10 border-indigo-500/30' : 'bg-slate-950 border-slate-800'}`}>
+                         {Array.from(backtestResults.methodMetrics.entries())
+                           .sort((a, b) => (b[1].accuracy || 0) - (a[1].accuracy || 0))
+                           .map(([method, metrics]) => (
+                           <div key={method} className={`p-3 rounded-xl border ${method === committedSettings.filters.methodology ? 'bg-indigo-600/10 border-indigo-500/30' : 'bg-slate-950 border-slate-800'}`}>
                              <div className="flex justify-between items-center mb-1">
-                               <span className="text-[9px] font-black uppercase text-slate-300">{m.method.split(' (')[0]}</span>
-                               <span className="text-[10px] font-black text-indigo-400">{m.accuracy.toFixed(1)}%</span>
+                               <span className="text-[9px] font-black uppercase text-slate-300">{method.split(' (')[0]}</span>
+                               <span className="text-[10px] font-black text-indigo-400">{metrics.accuracy?.toFixed(1) || 'N/A'}%</span>
                              </div>
                              <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden">
-                               <div className="bg-indigo-500 h-full" style={{width: `${m.accuracy}%`}} />
+                               <div className="bg-indigo-500 h-full" style={{width: `${metrics.accuracy || 0}%`}} />
                              </div>
                            </div>
                          ))}
