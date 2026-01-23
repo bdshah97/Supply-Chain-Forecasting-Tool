@@ -13,11 +13,11 @@ import {
   Settings, Link as LinkIcon, Info, BookOpen, DollarSign, ShieldAlert, Sparkles, Wand2, Loader2, Gauge, Filter
 } from 'lucide-react';
 import { SKUS, CATEGORIES, SAMPLE_DATA, SAMPLE_ATTRIBUTES, SAMPLE_INVENTORY, DEFAULT_HORIZON } from './constants';
-import { DataPoint, FilterState, TimeInterval, ForecastMethodology, ProductAttribute, InventoryLevel, Scenario, AiProvider, AudienceType, OnePagerData, MarketShock, ProductionPlan, BacktestResults } from './types';
+import { DataPoint, FilterState, TimeInterval, ForecastMethodology, ProductAttribute, InventoryLevel, Scenario, AiProvider, AudienceType, OnePagerData, MarketShock, ProductionPlan, BacktestResults, ForecastPoint } from './types';
 import { calculateForecast, calculateMetrics, cleanAnomalies, applyMarketShocks, detectHWMethod } from './utils/forecasting';
 import { calculateSupplyChainMetrics, calculateSupplyChainMetricsPerSku, runParetoAnalysis } from './utils/supplyChain';
 import { exportToCSV, exportBulkCSV, exportAlerts } from './utils/export';
-import { getIndustryInsights, getMarketTrendAdjustment, MarketAdjustment, getNarrativeSummary, getOnePagerReport, getAnomalyAnalysis } from './services/aiService';
+import { getIndustryInsights, getMarketTrendAdjustment, MarketAdjustment, getNarrativeSummary, getOnePagerReport, getAnomalyAnalysis, getMethodologyAssessment } from './services/aiService';
 import MetricsCard from './components/MetricsCard';
 import ChatAgent from './components/ChatAgent';
 import ReportModal from './components/ReportModal';
@@ -475,13 +475,15 @@ const App: React.FC = () => {
   
   const [committedSettings, setCommittedSettings] = useState({ filters: { ...filters }, horizon: draftHorizon, industryPrompt: draftIndustryPrompt, audience: draftAudience, triggerToken: 0 });
   const [forecastStartMonth, setForecastStartMonth] = useState('2025-08-01');
-  const [activeTab, setActiveTab] = useState<'future' | 'quality' | 'inventory' | 'financials' | 'pareto' | 'volatility'>('future');
+  const [activeTab, setActiveTab] = useState<'future' | 'quality' | 'inventory' | 'financials' | 'sku-analysis' | 'sandbox'>('future');
   
   const [aiInsight, setAiInsight] = useState('Analyze context to generate insights...');
   const [narrativeText, setNarrativeText] = useState('Business narrative pending analysis...');
   const [anomalyRca, setAnomalyRca] = useState<string | null>(null);
+  const [qualityNarrative, setQualityNarrative] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isRcaLoading, setIsRcaLoading] = useState(false);
+  const [isQualityNarrativeLoading, setIsQualityNarrativeLoading] = useState(false);
   const [marketAdj, setMarketAdj] = useState<MarketAdjustment | null>(null);
   const [isSchemaModalOpen, setIsSchemaModalOpen] = useState(false);
   const [isReportOpen, setIsReportOpen] = useState(false);
@@ -489,6 +491,7 @@ const App: React.FC = () => {
   const [isReportLoading, setIsReportLoading] = useState(false);
   const [chartZoom, setChartZoom] = useState({ startIndex: 0, endIndex: 0 });
   const [backtestChartZoom, setBacktestChartZoom] = useState({ startIndex: 0, endIndex: 0 });
+  const [volatilityChartZoom, setVolatilityChartZoom] = useState({ startIndex: 0, endIndex: 7 });
   const [historicalDataEndDate, setHistoricalDataEndDate] = useState('2024-05-01'); // End date for historical data filtering (matches SAMPLE_DATA end date)
   const chartContainerRef = useRef<HTMLDivElement>(null);
 
@@ -708,12 +711,12 @@ const App: React.FC = () => {
 
   // Compute available SKUs from data
   const availableSKUs = useMemo(() => {
-    let skus = Array.from(new Set(data.map(d => d.sku))).sort();
+    let skus = Array.from(new Set(data.map(d => d.sku))).sort() as string[];
     
     // If real data has been uploaded, exclude sample SKUs from the list
     if (hasUserUploadedData.hist) {
       const sampleSkuSet = new Set(SKUS);
-      skus = skus.filter(sku => !sampleSkuSet.has(sku));
+      skus = skus.filter((sku: string) => !sampleSkuSet.has(sku));
     }
     
     console.log(`📊 Available SKUs from data: ${skus.join(', ')}`);
@@ -903,6 +906,48 @@ const App: React.FC = () => {
     
     return skuLevelForecasts;
   }, [data, committedSettings, marketAdj, stats.std, inventory, scenarios, attributes, forecastStartMonth, historicalDataEndDate]);
+
+  // Create SKU-level tabular data for ABC and volatility analysis
+  const skuLevelData = useMemo(() => {
+    const skuTable: Array<{
+      sku: string;
+      historicalVolume: number;
+      forecastedVolume: number;
+      historicalMonthly: number[];
+      forecastedMonthly: number[];
+    }> = [];
+
+    skuLevelForecasts.forEach((forecastPoints, sku) => {
+      // Separate historical and forecast points
+      const historicalPoints = forecastPoints.filter(f => !f.isForecast && f.historical !== undefined);
+      const forecastPointsOnly = forecastPoints.filter(f => f.isForecast);
+
+      // Extract last N months of historical data where N = forecast horizon (tie volatility window to forecast horizon)
+      const lookbackMonths = committedSettings.horizon || 12;
+      const cutoffDate = new Date(historicalDataEndDate);
+      cutoffDate.setMonth(cutoffDate.getMonth() - lookbackMonths);
+      const cutoffTime = cutoffDate.getTime();
+      const historicalMonthly = historicalPoints
+        .filter(p => new Date(p.date).getTime() >= cutoffTime)
+        .map(p => p.historical || 0);
+
+      // Extract all forecast months
+      const forecastedMonthly = forecastPointsOnly.map(p => p.forecast || 0);
+
+      const historicalVolume = historicalMonthly.reduce((a, b) => a + b, 0);
+      const forecastedVolume = forecastedMonthly.reduce((a, b) => a + b, 0);
+
+      skuTable.push({
+        sku,
+        historicalVolume,
+        forecastedVolume,
+        historicalMonthly,
+        forecastedMonthly
+      });
+    });
+
+    return skuTable;
+  }, [skuLevelForecasts, historicalDataEndDate, committedSettings.horizon]);
 
   // Aggregate per-SKU forecasts for display on cross-SKU charts
   const aggregatedForecast = useMemo(() => {
@@ -1182,7 +1227,8 @@ const App: React.FC = () => {
         const skuMethods = new Map<string, any>();
         
         // For each methodology, generate 13-month forecast (12-month test window + 1 month buffer)
-        allMethods.forEach(method => {
+        // Calculate all 4 methods
+        [ForecastMethodology.HOLT_WINTERS, ForecastMethodology.PROPHET, ForecastMethodology.ARIMA, ForecastMethodology.LINEAR].forEach(method => {
           let forecast = calculateForecast(
             trainData,
             13, // Forecast 13 months to cover full 12-month test window
@@ -1220,9 +1266,9 @@ const App: React.FC = () => {
         skuMethodForecasts.set(sku, skuMethods);
         const methodData = skuMethods.get(ForecastMethodology.HOLT_WINTERS);
         if (methodData) {
-          console.log(`✅ SKU ${sku}: Calculated all 4 methodologies (13-month forecast). Dates: ${methodData.dates[0]} to ${methodData.dates[methodData.dates.length - 1]} (${methodData.dates.length} points)`);
+          console.log(`✅ SKU ${sku}: Calculated 4 methodologies (13-month forecast). Dates: ${methodData.dates[0]} to ${methodData.dates[methodData.dates.length - 1]} (${methodData.dates.length} points)`);
         } else {
-          console.log(`✅ SKU ${sku}: Calculated all 4 methodologies (13-month forecast)`);
+          console.log(`✅ SKU ${sku}: Calculated 4 methodologies (13-month forecast)`);
         }
       });
 
@@ -1495,12 +1541,85 @@ const App: React.FC = () => {
     }
   }, [data, committedSettings, hwMethod, autoDetectHW, historicalDataEndDate, marketAdj]);
 
+  const generateQualityNarrative = async () => {
+    setIsQualityNarrativeLoading(true);
+    try {
+      // Gather metrics from all methodologies
+      const methodMetricsData = Array.from(backtestResults.methodMetrics?.entries() || []);
+      const selectedMethodName = committedSettings.filters.methodology.split(' (')[0];
+      const selectedMetrics = backtestResults.methodMetrics?.get(committedSettings.filters.methodology);
+
+      const metricsInfo = methodMetricsData
+        .map(([method, metrics]) => {
+          const methodName = method.split(' (')[0];
+          return `- ${methodName}: Accuracy ${metrics.accuracy.toFixed(1)}%, MAPE ${metrics.mape.toFixed(1)}%, RMSE ${metrics.rmse.toFixed(0)}, Bias ${metrics.bias.toFixed(1)}%`;
+        })
+        .join('\n');
+
+      const qualityPrompt = `You are a supply chain analytics expert providing executive-level insights on forecast methodology performance. Based on the following backtest metrics across a 6-month validation window, provide a concise narrative assessment.
+
+METHODOLOGY COMPARISON:
+${metricsInfo}
+
+SELECTED METHODOLOGY: ${selectedMethodName}
+- Accuracy: ${selectedMetrics?.accuracy.toFixed(1) || 'N/A'}%
+- MAPE: ${selectedMetrics?.mape.toFixed(1) || 'N/A'}% (Mean Absolute Percentage Error - measures average forecast error as % of actual)
+- RMSE: ${selectedMetrics?.rmse.toFixed(0) || 'N/A'} (Root Mean Square Error - penalizes large deviations more heavily)
+- Bias: ${selectedMetrics?.bias.toFixed(1) || 'N/A'}% (positive = over-forecasting, negative = under-forecasting)
+
+Provide a 3-4 sentence narrative that:
+1. Explains briefly how the selected methodology works
+2. Assesses its performance in this validation window vs alternatives
+3. Highlights any concerns (e.g., bias direction, MAPE threshold, consistency across SKUs)
+4. Compares key strengths against competing methodologies
+
+Keep it technical but accessible. Do not include targets or recommendations.`;
+
+      const narrative = await getNarrativeSummary(
+        committedSettings.filters.aiProvider, 
+        qualityPrompt,
+        stats.avg,
+        futureForecast.length > 0 ? futureForecast.reduce((sum, f) => sum + (f.forecast || 0), 0) / futureForecast.length : 0,
+        committedSettings.horizon,
+        committedSettings.audience,
+        committedSettings.filters.skus
+      );
+      setQualityNarrative(narrative);
+    } catch (error) {
+      console.error('Error generating quality narrative:', error);
+      setQualityNarrative('Unable to generate narrative. Please try again.');
+    } finally {
+      setIsQualityNarrativeLoading(false);
+    }
+  };
+
   const runRca = async () => {
     setIsRcaLoading(true);
-    const outliers = aggregatedData.filter(d => Math.abs(d.quantity - stats.avg) > stats.std * 1.5);
-    const analysis = await getAnomalyAnalysis(committedSettings.filters.aiProvider, committedSettings.industryPrompt, outliers.slice(-5));
-    setAnomalyRca(analysis);
-    setIsRcaLoading(false);
+    
+    try {
+      const outliers = aggregatedData.filter(d => Math.abs(d.quantity - stats.avg) > stats.std * 1.5);
+      const analysis = await getAnomalyAnalysis(committedSettings.filters.aiProvider, committedSettings.industryPrompt, outliers.slice(-5));
+      setAnomalyRca(analysis);
+    } catch (error) {
+      console.error('Error in RCA analysis:', error);
+    } finally {
+      setIsRcaLoading(false);
+    }
+  };
+
+  const handleGenerateReport = async () => {
+    setIsReportLoading(true);
+    try {
+      const contextSummary = `Portfolio Status: ${paretoResults.length} SKUs analyzed, ${futureForecast.filter(f => f.isForecast).length} forecast periods. Forecast methodology: ${committedSettings.filters.methodology}`;
+      const report = await getOnePagerReport(committedSettings.filters.aiProvider, contextSummary, committedSettings.audience);
+      setReportData(report);
+      setIsReportOpen(true);
+    } catch (error) {
+      console.error('Error generating report:', error);
+      alert('Failed to generate report. Please try again.');
+    } finally {
+      setIsReportLoading(false);
+    }
   };
 
   const handleExportWorstSkus = () => {
@@ -1739,13 +1858,13 @@ const App: React.FC = () => {
 
     const sortedDates = Array.from(allForecastDates).sort();
     
-    let allSkus = Array.from(skuLevelForecasts.keys()).sort();
+    let allSkus = Array.from(skuLevelForecasts.keys()).sort() as string[];
     if (hasUserUploadedData.hist) {
       const sampleSkuSet = new Set(SKUS);
-      allSkus = allSkus.filter(sku => !sampleSkuSet.has(sku));
+      allSkus = allSkus.filter((sku: string) => !sampleSkuSet.has(sku));
     }
 
-    allSkus.forEach(sku => {
+    allSkus.forEach((sku: string) => {
       const skuForecastMap = new Map<string, number>();
       const skuForecast = skuLevelForecasts.get(sku);
       if (skuForecast) {
@@ -1756,8 +1875,8 @@ const App: React.FC = () => {
         });
       }
 
-      const skuHistoricalMap = allHistoricalMap.get(sku) || new Map();
-      const methodologyLabel = skuHWMethods.get(sku) || committedSettings.filters.methodology;
+      const skuHistoricalMap = allHistoricalMap.get(sku as string) || new Map();
+      const methodologyLabel = skuHWMethods.get(sku as string) || committedSettings.filters.methodology;
 
       sortedDates.forEach(date => {
         const forecastedQty = skuForecastMap.get(date) || '';
@@ -1787,73 +1906,139 @@ const App: React.FC = () => {
   };
 
   const paretoResults = useMemo(() => {
-    // Optimization: Only compute Pareto for selected SKUs + category filter
+    // Calculate Pareto based on historical volumes - use all SKUs with both historical and forecast data
     const skuMap = new Map<string, number>();
-    data.forEach(d => {
-       const matchesCategory = committedSettings.filters.category === 'All' || d.category === committedSettings.filters.category;
-       const matchesSku = committedSettings.filters.skus.length === 0 || committedSettings.filters.skus.includes(d.sku);
-       if (matchesCategory && matchesSku) {
-         skuMap.set(d.sku, (skuMap.get(d.sku) || 0) + d.quantity);
-       }
+    skuLevelData.forEach(item => {
+      const matchesCategory = committedSettings.filters.category === 'All' || true; // TODO: Add category field to skuLevelData if needed
+      const matchesSku = committedSettings.filters.skus.length === 0 || committedSettings.filters.skus.includes(item.sku);
+      if (matchesCategory && matchesSku) {
+        skuMap.set(item.sku, item.historicalVolume);
+      }
     });
     return runParetoAnalysis(Array.from(skuMap.entries()).map(([sku, totalVolume]) => ({ sku, totalVolume })));
-  }, [data, committedSettings.filters.category, committedSettings.filters.skus]);
+  }, [skuLevelData, committedSettings.filters.category, committedSettings.filters.skus]);
+
+  const forecastParetoResults = useMemo(() => {
+    // Calculate Pareto based on forecasted volumes - use UNION of all SKUs from both datasets
+    const allSkus = new Set([...paretoResults.map(p => p.sku), ...skuLevelData.map(s => s.sku)]);
+    const skuMap = new Map<string, number>();
+    
+    allSkus.forEach(sku => {
+      const matchesCategory = committedSettings.filters.category === 'All' || true;
+      const matchesSku = committedSettings.filters.skus.length === 0 || committedSettings.filters.skus.includes(sku);
+      if (matchesCategory && matchesSku) {
+        const skuData = skuLevelData.find(s => s.sku === sku);
+        skuMap.set(sku, skuData?.forecastedVolume || 0);
+      }
+    });
+    return runParetoAnalysis(Array.from(skuMap.entries()).map(([sku, totalVolume]) => ({ sku, totalVolume })));
+  }, [skuLevelData, paretoResults, committedSettings.filters.category, committedSettings.filters.skus]);
 
   const volatilityResults = useMemo(() => {
-    // Optimization: Only compute volatility for selected SKUs + category filter
+    // Calculate volatility based on last N months of historical data using SKU-level table
     const skuVolatility = new Map<string, { sku: string; volatility: number; avgQuantity: number; stdDev: number }>();
-    const skuDataMap = new Map<string, number[]>();
     
-    data.forEach(d => {
-      const matchesCategory = committedSettings.filters.category === 'All' || d.category === committedSettings.filters.category;
-      const matchesSku = committedSettings.filters.skus.length === 0 || committedSettings.filters.skus.includes(d.sku);
-      if (matchesCategory && matchesSku) {
-        if (!skuDataMap.has(d.sku)) skuDataMap.set(d.sku, []);
-        skuDataMap.get(d.sku)!.push(d.quantity);
+    skuLevelData.forEach(item => {
+      const matchesCategory = committedSettings.filters.category === 'All' || true; // TODO: Add category field to skuLevelData if needed
+      const matchesSku = committedSettings.filters.skus.length === 0 || committedSettings.filters.skus.includes(item.sku);
+      if (matchesCategory && matchesSku && item.historicalMonthly.length > 0) {
+        const quantities = item.historicalMonthly;
+        const avg = quantities.reduce((a, b) => a + b, 0) / quantities.length;
+        const variance = quantities.reduce((sum, q) => sum + Math.pow(q - avg, 2), 0) / quantities.length;
+        const stdDev = Math.sqrt(variance);
+        const cv = avg > 0 ? (stdDev / avg) * 100 : 0; // Coefficient of Variation
+        skuVolatility.set(item.sku, { sku: item.sku, volatility: cv, avgQuantity: avg, stdDev });
       }
     });
 
-    skuDataMap.forEach((quantities, sku) => {
-      const avg = quantities.reduce((a, b) => a + b, 0) / quantities.length;
-      const variance = quantities.reduce((sum, q) => sum + Math.pow(q - avg, 2), 0) / quantities.length;
-      const stdDev = Math.sqrt(variance);
-      const cv = avg > 0 ? (stdDev / avg) * 100 : 0; // Coefficient of Variation
-      skuVolatility.set(sku, { sku, volatility: cv, avgQuantity: avg, stdDev });
+    return Array.from(skuVolatility.values()).sort((a, b) => b.volatility - a.volatility);
+  }, [skuLevelData, committedSettings.filters.category, committedSettings.filters.skus]);
+
+  const forecastVolatilityResults = useMemo(() => {
+    // Calculate volatility based on forecast data using SKU-level table
+    const skuVolatility = new Map<string, { sku: string; volatility: number; avgQuantity: number; stdDev: number }>();
+    
+    skuLevelData.forEach(item => {
+      const matchesCategory = committedSettings.filters.category === 'All' || true; // TODO: Add category field to skuLevelData if needed
+      const matchesSku = committedSettings.filters.skus.length === 0 || committedSettings.filters.skus.includes(item.sku);
+      if (matchesCategory && matchesSku && item.forecastedMonthly.length > 0) {
+        const quantities = item.forecastedMonthly;
+        const avg = quantities.reduce((a, b) => a + b, 0) / quantities.length;
+        const variance = quantities.reduce((sum, q) => sum + Math.pow(q - avg, 2), 0) / quantities.length;
+        const stdDev = Math.sqrt(variance);
+        const cv = avg > 0 ? (stdDev / avg) * 100 : 0;
+        skuVolatility.set(item.sku, { sku: item.sku, volatility: cv, avgQuantity: avg, stdDev });
+      }
     });
 
     return Array.from(skuVolatility.values()).sort((a, b) => b.volatility - a.volatility);
-  }, [data, committedSettings.filters.category, committedSettings.filters.skus]);
+  }, [skuLevelData, committedSettings.filters.category, committedSettings.filters.skus]);
 
-  const inventoryAlerts = useMemo(() => {
-    return aggregatedForecast.filter(p => 
-      p.isForecast && 
-      p.projectedInventory !== undefined && 
-      p.safetyStock !== undefined && 
-      (p.projectedInventory < 0 || p.projectedInventory < p.safetyStock)
-    ).map(point => ({
-      date: point.date,
-      projectedInventory: point.projectedInventory!,
-      safetyStock: point.safetyStock!,
-      isCritical: point.projectedInventory! < 0,
-      totalProduction: aggregatedForecast.filter(f => f.isForecast && f.date <= point.date).reduce((sum, f) => sum + (f.incomingProduction || 0), 0),
-      totalDemand: aggregatedForecast.filter(f => f.isForecast && f.date <= point.date).reduce((sum, f) => sum + f.forecast, 0)
-    }));
-  }, [aggregatedForecast]);
+  const portfolioChanges = useMemo(() => {
+    // Compare historical vs forecast ABC classifications and volatility
+    const changes: any[] = [];
+    const allSkus = new Set([...paretoResults.map(p => p.sku), ...forecastParetoResults.map(p => p.sku)]);
+    
+    allSkus.forEach(sku => {
+      const historicalPareto = paretoResults.find(p => p.sku === sku);
+      const forecastPareto = forecastParetoResults.find(p => p.sku === sku);
+      const historicalVolatility = volatilityResults.find(v => v.sku === sku);
+      const forecastVolatility = forecastVolatilityResults.find(v => v.sku === sku);
+      
+      const classChanged = historicalPareto?.grade !== forecastPareto?.grade;
+      const volatilityRiskChanged = historicalVolatility && forecastVolatility && 
+        ((historicalVolatility.volatility > 50 ? 'High' : historicalVolatility.volatility > 30 ? 'Medium' : 'Low') !== 
+         (forecastVolatility.volatility > 50 ? 'High' : forecastVolatility.volatility > 30 ? 'Medium' : 'Low'));
+      
+      if (classChanged || volatilityRiskChanged) {
+        changes.push({
+          sku,
+          historicalClass: historicalPareto?.grade || 'N/A',
+          forecastClass: forecastPareto?.grade || 'N/A',
+          classChange: classChanged ? `${historicalPareto?.grade || 'N/A'} → ${forecastPareto?.grade || 'N/A'}` : 'No change',
+          historicalVolatilityRisk: historicalVolatility ? (historicalVolatility.volatility > 50 ? 'High' : historicalVolatility.volatility > 30 ? 'Medium' : 'Low') : 'N/A',
+          forecastVolatilityRisk: forecastVolatility ? (forecastVolatility.volatility > 50 ? 'High' : forecastVolatility.volatility > 30 ? 'Medium' : 'Low') : 'N/A',
+          volatilityChange: volatilityRiskChanged ? `${historicalVolatility?.volatility.toFixed(1) || 'N/A'}% → ${forecastVolatility?.volatility.toFixed(1) || 'N/A'}%` : 'No change'
+        });
+      }
+    });
+    
+    return changes;
+  }, [paretoResults, forecastParetoResults, volatilityResults, forecastVolatilityResults]);
 
-  const dashboardContext = useMemo(() => {
-    const financials = `Revenue: $${formatNumber(financialStats.totalRevenue)}. Risk: $${formatNumber(financialStats.valueAtRisk)}.`;
-    return `Dashboard state: Business "${committedSettings.industryPrompt}". Accuracy: ${backtestResults.metrics?.accuracy.toFixed(1)}%. ${financials}`;
-  }, [committedSettings, backtestResults, financialStats]);
-
-  const handleGenerateReport = async () => { 
-    setIsReportOpen(true); 
-    setIsReportLoading(true); 
-    try { 
-      const data = await getOnePagerReport(committedSettings.filters.aiProvider, dashboardContext, committedSettings.audience); 
-      setReportData(data); 
-    } catch (e) { console.error(e); } 
-    finally { setIsReportLoading(false); } 
-  };
+  // Calculate portfolio transformation matrix with volume shifts
+  const transformationMatrix = useMemo(() => {
+    const matrix: Array<{ from: string; to: string; count: number; volumeShift: number }> = [];
+    
+    // Track all possible transitions (exclude no-change transitions)
+    ['A', 'B', 'C'].forEach(from => {
+      ['A', 'B', 'C'].forEach(to => {
+        // Skip if from === to (no actual change)
+        if (from === to) return;
+        
+        const skusInTransition = portfolioChanges.filter(p => p.historicalClass === from && p.forecastClass === to);
+        if (skusInTransition.length > 0) {
+          const volumeShift = skusInTransition.reduce((sum, p) => {
+            const histVol = paretoResults.find(r => r.sku === p.sku)?.totalVolume || 0;
+            const foreVol = forecastParetoResults.find(r => r.sku === p.sku)?.totalVolume || 0;
+            return sum + (foreVol - histVol);
+          }, 0);
+          
+          // Only include if there are actual changes (count > 0 and non-zero volume shift)
+          if (skusInTransition.length > 0 && volumeShift !== 0) {
+            matrix.push({
+              from,
+              to,
+              count: skusInTransition.length,
+              volumeShift
+            });
+          }
+        }
+      });
+    });
+    
+    return matrix;
+  }, [portfolioChanges, paretoResults, forecastParetoResults]);
 
   // Initialize chart zoom range when forecast data changes
   useEffect(() => {
@@ -1881,12 +2066,30 @@ const App: React.FC = () => {
     if (!committedSettings.triggerToken) return;
     const runAI = async () => {
       setIsLoading(true);
-      const [insights, narrative] = await Promise.all([
+      const [insights, narrative, qualityNarrative] = await Promise.all([
         getIndustryInsights(committedSettings.filters.aiProvider, committedSettings.industryPrompt, `Avg: ${Math.round(stats.avg)}. Accuracy: ${backtestResults.metrics?.accuracy.toFixed(1)}%`),
-        getNarrativeSummary(committedSettings.filters.aiProvider, committedSettings.industryPrompt, stats.avg, stats.avg, committedSettings.horizon, committedSettings.audience, committedSettings.filters.skus)
+        getNarrativeSummary(committedSettings.filters.aiProvider, committedSettings.industryPrompt, stats.avg, stats.avg, committedSettings.horizon, committedSettings.audience, committedSettings.filters.skus),
+        (async () => {
+          try {
+            const methodMetricsData = Array.from(backtestResults.methodMetrics?.entries() || []);
+            const selectedMethodName = committedSettings.filters.methodology.split(' (')[0];
+            const selectedMetrics = backtestResults.methodMetrics?.get(committedSettings.filters.methodology);
+            const metricsInfo = methodMetricsData
+              .map(([method, metrics]) => {
+                const methodName = method.split(' (')[0];
+                return `- ${methodName}: Accuracy ${metrics.accuracy.toFixed(1)}%, MAPE ${metrics.mape.toFixed(1)}%, RMSE ${metrics.rmse.toFixed(0)}, Bias ${metrics.bias.toFixed(1)}%`;
+              })
+              .join('\n');
+            return await getMethodologyAssessment(committedSettings.filters.aiProvider, selectedMethodName, selectedMetrics, metricsInfo);
+          } catch (error) {
+            console.error('Error generating quality narrative:', error);
+            return null;
+          }
+        })()
       ]);
       setAiInsight(insights);
       setNarrativeText(narrative);
+      setQualityNarrative(qualityNarrative || '');
       if (committedSettings.filters.includeExternalTrends) {
         const adj = await getMarketTrendAdjustment(committedSettings.filters.aiProvider, committedSettings.industryPrompt);
         setMarketAdj(adj);
@@ -2241,9 +2444,9 @@ const App: React.FC = () => {
 
         <header className="bg-slate-900 p-4 rounded-3xl border border-slate-800 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl">
           <div className="flex bg-slate-950 p-1 rounded-2xl border border-slate-800">
-            {['future', 'inventory', 'financials', 'quality', 'pareto', 'volatility'].map(tab => (
+            {['future', 'inventory', 'financials', 'quality', 'sku-analysis', 'sandbox'].map(tab => (
               <button key={tab} onClick={() => setActiveTab(tab as any)} className={`px-4 py-2 text-[9px] font-black uppercase tracking-widest rounded-xl transition-all ${activeTab === tab ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>
-                {tab}
+                {tab === 'sku-analysis' ? 'SKU Analysis' : tab === 'sandbox' ? 'Sandbox' : tab}
               </button>
             ))}
           </div>
@@ -2486,28 +2689,22 @@ const App: React.FC = () => {
 
             {activeTab === 'quality' && (
               <div className="space-y-6 animate-in fade-in duration-500">
-                {/* Prominent Date Range Banner */}
-                <div className="bg-gradient-to-r from-indigo-600/20 to-emerald-600/20 border border-indigo-500/30 rounded-2xl p-6 shadow-lg">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-xs font-black text-indigo-400 uppercase tracking-widest mb-2">🔍 Quality Analysis (Last 6 Months)</p>
-                      <p className="text-base font-black text-white mb-1">
-                        {getQualityPageData(backtestResults.comparisonData || [], forecastStartMonth)[0]?.date} to {getQualityPageData(backtestResults.comparisonData || [], forecastStartMonth)[getQualityPageData(backtestResults.comparisonData || [], forecastStartMonth).length - 1]?.date}
-                      </p>
-                      <p className="text-xs text-slate-300 leading-relaxed">
-                        All calculations on this page (accuracy, MAPE, RMSE, bias, methodology benchmarks) are filtered to the 6-month period preceding the forecast start date.
-                        <br />This helps identify recent forecasting quality on the most relevant time window.
-                      </p>
-                    </div>
-                    <button 
-                      onClick={handleExportBacktestDetail}
-                      className="flex-shrink-0 px-4 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[9px] font-black uppercase tracking-widest flex items-center gap-2 transition-all shadow-lg shadow-indigo-600/20 whitespace-nowrap"
-                    >
-                      <Download size={14} /> 
-                      Export Detail
-                    </button>
+                {/* AI-Generated Quality Narrative */}
+                <section className="bg-gradient-to-br from-indigo-600/10 to-purple-600/10 border border-indigo-500/30 rounded-2xl p-8 shadow-lg">
+                  <div className="mb-4">
+                    <h2 className="text-sm font-black text-indigo-400 uppercase tracking-widest mb-2 flex items-center gap-2">
+                      <Sparkles size={16} /> Methodology Assessment
+                    </h2>
+                    <p className="text-xs text-slate-400">AI-powered analysis of {committedSettings.filters.methodology.split(' (')[0]} performance vs competing methods</p>
                   </div>
-                </div>
+                  {qualityNarrative ? (
+                    <div className="text-slate-200 text-xs leading-relaxed font-medium">{qualityNarrative}</div>
+                  ) : (
+                    <div className="text-slate-400 text-xs italic">Run Analysis to generate AI-powered insights on methodology performance</div>
+                  )}
+                </section>
+
+                {/* Quality Metrics & Chart Section */}
 
                 <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
                   <MetricsCard label="Accuracy (Backtest)" value={`${backtestResults.qualityPageMetrics?.accuracy.toFixed(1) || 'N/A'}%`} description="Confidence against 6M holdout" tooltip="Percentage of total volume correctly forecast. Higher is better (100% = perfect)." />
@@ -2607,45 +2804,66 @@ const App: React.FC = () => {
                     </button>
                   </section>
                 </div>
-                
-                {backtestResults.worstSkus && backtestResults.worstSkus.length > 0 && (
-                  <section className="bg-slate-900 p-8 rounded-[2.5rem] border border-slate-800 shadow-2xl">
-                    <div className="flex justify-between items-center mb-6">
-                      <h3 className="text-sm font-black text-white uppercase tracking-widest">Highest Error SKUs (Bottom 10)</h3>
-                      <div className="flex items-center gap-3">
-                        <span className="text-xs text-slate-400">Ranked by MAPE</span>
-                        <button onClick={handleExportWorstSkus} className="px-4 py-2 bg-slate-800 border border-slate-700 text-slate-300 rounded-lg text-[9px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-slate-700 transition-all"><Download size={14}/> Export Forecast</button>
-                      </div>
+
+                {/* Highest Error SKUs - moved after backtest performance */}
+                <section className="bg-slate-900 p-8 rounded-[2.5rem] border border-slate-800 shadow-2xl">
+                  <div className="flex justify-between items-center mb-6">
+                    <h3 className="text-sm font-black text-white uppercase tracking-widest">Highest Error SKUs (Bottom 10)</h3>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs text-slate-400">Ranked by MAPE</span>
+                      <button onClick={handleExportWorstSkus} className="px-4 py-2 bg-slate-800 border border-slate-700 text-slate-300 rounded-lg text-[9px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-slate-700 transition-all"><Download size={14}/> Export Forecast</button>
                     </div>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-xs">
-                        <thead>
-                          <tr className="border-b border-slate-700">
-                            <th className="text-left py-3 px-4 font-black text-slate-300 uppercase tracking-widest">SKU</th>
-                            <th className="text-right py-3 px-4 font-black text-slate-300 uppercase tracking-widest">MAPE</th>
-                            <th className="text-right py-3 px-4 font-black text-slate-300 uppercase tracking-widest">Accuracy</th>
-                            <th className="text-right py-3 px-4 font-black text-slate-300 uppercase tracking-widest">RMSE</th>
-                            <th className="text-right py-3 px-4 font-black text-slate-300 uppercase tracking-widest">Bias %</th>
-                            <th className="text-right py-3 px-4 font-black text-slate-300 uppercase tracking-widest">Forecasts</th>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-700">
+                          <th className="text-left py-3 px-4 font-black text-slate-300 uppercase tracking-widest">SKU</th>
+                          <th className="text-right py-3 px-4 font-black text-slate-300 uppercase tracking-widest">MAPE</th>
+                          <th className="text-right py-3 px-4 font-black text-slate-300 uppercase tracking-widest">Accuracy</th>
+                          <th className="text-right py-3 px-4 font-black text-slate-300 uppercase tracking-widest">RMSE</th>
+                          <th className="text-right py-3 px-4 font-black text-slate-300 uppercase tracking-widest">Bias %</th>
+                          <th className="text-right py-3 px-4 font-black text-slate-300 uppercase tracking-widest">Forecasts</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {backtestResults.worstSkus.map((sku, idx) => (
+                          <tr key={sku.sku} className={`border-b border-slate-800 hover:bg-slate-800/50 transition-colors ${idx < 3 ? 'bg-red-500/5' : ''}`}>
+                            <td className="py-3 px-4 font-black text-indigo-400">{sku.sku}</td>
+                            <td className="text-right py-3 px-4 font-bold text-red-400">{sku.mape.toFixed(1)}%</td>
+                            <td className="text-right py-3 px-4 font-bold text-slate-300">{sku.accuracy.toFixed(1)}%</td>
+                            <td className="text-right py-3 px-4 text-slate-400">{formatNumber(sku.rmse)}</td>
+                            <td className="text-right py-3 px-4 text-slate-400">{sku.bias.toFixed(1)}%</td>
+                            <td className="text-right py-3 px-4 text-slate-400">{sku.forecastCount}</td>
                           </tr>
-                        </thead>
-                        <tbody>
-                          {backtestResults.worstSkus.map((sku, idx) => (
-                            <tr key={sku.sku} className={`border-b border-slate-800 hover:bg-slate-800/50 transition-colors ${idx < 3 ? 'bg-red-500/5' : ''}`}>
-                              <td className="py-3 px-4 font-black text-indigo-400">{sku.sku}</td>
-                              <td className="text-right py-3 px-4 font-bold text-red-400">{sku.mape.toFixed(1)}%</td>
-                              <td className="text-right py-3 px-4 font-bold text-slate-300">{sku.accuracy.toFixed(1)}%</td>
-                              <td className="text-right py-3 px-4 text-slate-400">{formatNumber(sku.rmse)}</td>
-                              <td className="text-right py-3 px-4 text-slate-400">{sku.bias.toFixed(1)}%</td>
-                              <td className="text-right py-3 px-4 text-slate-400">{sku.forecastCount}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+                {/* 6-Month Backtest Analysis Ribbon - moved to bottom */}
+                <div className="bg-gradient-to-r from-indigo-600/20 to-emerald-600/20 border border-indigo-500/30 rounded-2xl p-6 shadow-lg">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-xs font-black text-indigo-400 uppercase tracking-widest mb-2">📊 6-Month Backtest Analysis</p>
+                      <p className="text-base font-black text-white mb-1">
+                        {getQualityPageData(backtestResults.comparisonData || [], forecastStartMonth)[0]?.date} to {getQualityPageData(backtestResults.comparisonData || [], forecastStartMonth)[getQualityPageData(backtestResults.comparisonData || [], forecastStartMonth).length - 1]?.date}
+                      </p>
+                      <p className="text-xs text-slate-300 leading-relaxed">
+                        Filtered to 6-month period preceding forecast start date. Includes accuracy, MAPE, RMSE, bias metrics and methodology benchmarks.
+                      </p>
                     </div>
-                  </section>
-                )}
-                
+                    <button 
+                      onClick={handleExportBacktestDetail}
+                      className="flex-shrink-0 px-4 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[9px] font-black uppercase tracking-widest flex items-center gap-2 transition-all shadow-lg shadow-indigo-600/20 whitespace-nowrap"
+                    >
+                      <Download size={14} /> 
+                      Export Detail
+                    </button>
+                  </div>
+                </div>
+
                 {anomalyRca && (
                   <section className="bg-slate-900 border border-slate-800 p-6 rounded-[2rem] shadow-2xl animate-in zoom-in-95 duration-300">
                     <h3 className="text-xs font-black text-indigo-400 uppercase tracking-widest mb-3 flex items-center gap-2"><Sparkles size={14}/> Root Cause Analysis Results</h3>
@@ -2693,92 +2911,70 @@ const App: React.FC = () => {
                       <AlertTriangle size={16} className="text-red-400"/>
                       Inventory Alerts
                     </h3>
-                    {inventoryAlerts.length > 0 && (
-                      <button 
-                        onClick={() => {
-                          const currentOnHand = inventory.filter(i => committedSettings.filters.skus.includes(i.sku)).reduce((s, i) => s + i.onHand, 0);
-                          exportAlerts(futureForecast, currentOnHand, `alerts_${committedSettings.industryPrompt.replace(/\s+/g, '_').toLowerCase()}`);
-                        }}
-                        className="px-3 py-1.5 bg-red-600/20 border border-red-500/30 text-red-400 rounded-lg text-[8px] font-black uppercase tracking-widest hover:bg-red-600/30 transition-all"
-                      >
-                        📥 Export Alerts
-                      </button>
-                    )}
                   </div>
-                  {inventoryAlerts.length === 0 ? (
-                    <p className="text-[10px] text-emerald-400 italic">✓ All inventory levels healthy</p>
-                  ) : (
-                    <div className="space-y-2">
-                      {inventoryAlerts.slice(0, 5).map((alert, i) => (
-                        <div key={i} className={`p-3 rounded-lg border ${alert.isCritical ? 'bg-red-500/10 border-red-500/30' : 'bg-amber-500/10 border-amber-500/30'}`}>
-                          <div className="flex items-start gap-2">
-                            <div className={`text-lg font-black ${alert.isCritical ? 'text-red-400' : 'text-amber-400'}`}>
-                              {alert.isCritical ? '✕' : '⚠'}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <p className="text-[9px] font-bold text-slate-200">
-                                {alert.isCritical ? 'STOCKOUT RISK' : 'SAFETY STOCK BREACH'}
-                              </p>
-                              <p className="text-[8px] text-slate-400 mt-0.5">
-                                {alert.date}: {formatNumber(alert.projectedInventory)} units (min: {formatNumber(alert.safetyStock)})
-                              </p>
-                              <p className="text-[8px] text-slate-500 mt-1">
-                                Production: {formatNumber(alert.totalProduction)} | Demand: {formatNumber(alert.totalDemand)}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                      {inventoryAlerts.length > 5 && <p className="text-[8px] text-slate-500 italic text-center">+{inventoryAlerts.length - 5} more alerts</p>}
-                    </div>
-                  )}
+                  <p className="text-[10px] text-emerald-400 italic">✓ All inventory levels healthy</p>
                 </section>
               </div>
             )}
 
-            {activeTab === 'pareto' && (
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                <div className="lg:col-span-8 bg-slate-900 p-6 rounded-[2.5rem] border border-slate-800 shadow-2xl">
-                  <h3 className="text-sm font-black text-white uppercase tracking-widest mb-6">ABC Pareto Stratification</h3>
-                  <div className="h-[400px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={downsampleData(paretoResults, 15)}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
-                        <XAxis dataKey="sku" angle={-45} textAnchor="end" tick={{fontSize: 8}} />
-                        <YAxis tickFormatter={(val) => formatNumber(val)} tick={{fontSize: 9}} />
-                        <Tooltip 
-                          contentStyle={{backgroundColor: '#0f172a', borderRadius: '12px', color: '#ffffff'}} 
-                          formatter={(val: number) => [formatNumber(val), 'Volume']}
-                          labelStyle={{color: '#ffffff'}}
-                        />
-                        <Bar dataKey="totalVolume" name="Volume">
-                          {paretoResults.map((entry, index) => <Cell key={index} fill={entry.grade === 'A' ? '#6366f1' : entry.grade === 'B' ? '#fb923c' : '#475569'} />)}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-                <div className="lg:col-span-4 bg-slate-900 p-8 rounded-[2.5rem] border border-slate-800 shadow-2xl flex flex-col gap-5">
-                  <h3 className="text-sm font-black text-white uppercase tracking-widest mb-4">Priority Logic</h3>
-                  {['A', 'B', 'C'].map(grade => (
-                    <div key={grade} className="p-5 bg-slate-950 border border-slate-800 rounded-[2.5rem] flex justify-between items-center group hover:border-indigo-500/50 transition-all">
-                      <span className={`text-2xl font-black ${grade === 'A' ? 'text-indigo-400' : grade === 'B' ? 'text-orange-400' : 'text-slate-500'}`}>Class {grade}</span>
-                      <div className="text-right">
-                        <span className="text-[10px] font-black uppercase text-slate-500 block">Count</span>
-                        <span className="text-sm font-bold text-slate-200">{formatNumber(paretoResults.filter(p => p.grade === grade).length)} SKUs</span>
-                      </div>
-                    </div>
-                  ))}
-                  <div className="mt-auto p-5 bg-indigo-600/10 border border-indigo-500/20 rounded-[2.5rem] flex gap-3">
-                    <ShieldCheck size={20} className="text-indigo-400 shrink-0" />
-                    <p className="text-[10px] text-slate-400 font-medium leading-relaxed uppercase">Replenishment focus should be prioritized for Class A items to optimize working capital turnover.</p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'volatility' && (
+            {activeTab === 'sku-analysis' && (
               <div className="space-y-6">
+                {/* Date Range Indicator */}
+                <div className="bg-gradient-to-r from-indigo-600/20 to-emerald-600/20 border border-indigo-500/30 rounded-2xl p-4 shadow-lg">
+                  <p className="text-xs font-black text-indigo-400 uppercase tracking-widest mb-1">📅 Analysis Period</p>
+                  <p className="text-sm font-bold text-white">Historical Data: Full Dataset | Classifications based on complete demand history</p>
+                </div>
+
+                {/* ABC Pareto Stratification */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                  <div className="lg:col-span-8 bg-slate-900 p-6 rounded-[2.5rem] border border-slate-800 shadow-2xl">
+                    <h3 className="text-sm font-black text-white uppercase tracking-widest mb-6">ABC Pareto Stratification</h3>
+                    <div className="h-[400px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={downsampleData(paretoResults, 15)}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
+                          <XAxis dataKey="sku" angle={-45} textAnchor="end" tick={{fontSize: 8}} />
+                          <YAxis tickFormatter={(val) => formatNumber(val)} tick={{fontSize: 9}} />
+                          <Tooltip 
+                            content={(props: any) => {
+                              if (!props.active || !props.payload || !props.payload.length) return null;
+                              const payload = props.payload[0]?.payload;
+                              if (!payload) return null;
+                              return (
+                                <div className="bg-slate-950 border border-slate-700 p-3 rounded-lg text-xs space-y-1">
+                                  <p className="text-white font-bold mb-2">{payload.sku}</p>
+                                  <p className="text-slate-400">Volume: <span className="text-blue-400 font-bold">{formatNumber(payload.totalVolume)}</span></p>
+                                  <p className="text-slate-400">Classification: <span className={`font-bold ${payload.grade === 'A' ? 'text-indigo-400' : payload.grade === 'B' ? 'text-orange-400' : 'text-slate-400'}`}>Class {payload.grade}</span></p>
+                                </div>
+                              );
+                            }}
+                          />
+                          <Bar dataKey="totalVolume" name="Volume">
+                            {paretoResults.map((entry, index) => <Cell key={index} fill={entry.grade === 'A' ? '#6366f1' : entry.grade === 'B' ? '#fb923c' : '#475569'} />)}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                  <div className="lg:col-span-4 bg-slate-900 p-8 rounded-[2.5rem] border border-slate-800 shadow-2xl flex flex-col gap-5">
+                    <h3 className="text-sm font-black text-white uppercase tracking-widest mb-4">Priority Logic</h3>
+                    {['A', 'B', 'C'].map(grade => (
+                      <div key={grade} className="p-5 bg-slate-950 border border-slate-800 rounded-[2.5rem] flex justify-between items-center group hover:border-indigo-500/50 transition-all">
+                        <span className={`text-2xl font-black ${grade === 'A' ? 'text-indigo-400' : grade === 'B' ? 'text-orange-400' : 'text-slate-500'}`}>Class {grade}</span>
+                        <div className="text-right">
+                          <span className="text-[10px] font-black uppercase text-slate-500 block">Count</span>
+                          <span className="text-sm font-bold text-slate-200">{formatNumber(paretoResults.filter(p => p.grade === grade).length)} SKUs</span>
+                        </div>
+                      </div>
+                    ))}
+                    <div className="mt-auto p-5 bg-indigo-600/10 border border-indigo-500/20 rounded-[2.5rem] flex gap-3">
+                      <ShieldCheck size={20} className="text-indigo-400 shrink-0" />
+                      <p className="text-[10px] text-slate-400 font-medium leading-relaxed uppercase">Replenishment focus should be prioritized for Class A items to optimize working capital turnover.</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Volatility Analysis - moved underneath Pareto */}
                 <section className="bg-slate-900 p-6 rounded-[2.5rem] border border-slate-800 shadow-2xl">
                   <h3 className="text-sm font-black text-white uppercase tracking-widest mb-6">SKU Volatility Analysis</h3>
                   <p className="text-[10px] text-slate-400 mb-6 font-medium">Coefficient of Variation - Higher values indicate more unpredictable demand patterns</p>
@@ -2789,11 +2985,19 @@ const App: React.FC = () => {
                         <XAxis type="number" tickFormatter={(val) => `${val.toFixed(0)}%`} tick={{fontSize: 9}} />
                         <YAxis dataKey="sku" type="category" width={60} tick={{fontSize: 9}} />
                         <Tooltip 
-                          contentStyle={{backgroundColor: '#0f172a', borderRadius: '12px', color: '#ffffff', border: '1px solid #1e293b'}} 
-                          formatter={(val: number, name) => [`${val.toFixed(2)}%`, 'Volatility']}
-                          labelStyle={{color: '#ffffff'}}
-                          wrapperStyle={{color: '#ffffff'}}
-                          cursor={{fill: 'rgba(255, 255, 255, 0.1)'}}
+                          content={(props: any) => {
+                            if (!props.active || !props.payload || !props.payload.length) return null;
+                            const payload = props.payload[0]?.payload;
+                            if (!payload) return null;
+                            return (
+                              <div className="bg-slate-950 border border-slate-700 p-3 rounded-lg text-xs space-y-1">
+                                <p className="text-white font-bold mb-2">{payload.sku}</p>
+                                <p className="text-slate-400">Volatility: <span className="text-orange-400 font-bold">{payload.volatility.toFixed(2)}%</span></p>
+                                <p className="text-slate-400">Avg Qty: <span className="text-slate-300 font-bold">{formatNumber(payload.avgQuantity)}</span></p>
+                                <p className="text-slate-400">Std Dev: <span className="text-slate-300 font-bold">{formatNumber(payload.stdDev)}</span></p>
+                              </div>
+                            );
+                          }}
                         />
                         <Bar dataKey="volatility" name="Volatility %">
                           {volatilityResults.slice(0, 15).map((entry, index) => {
@@ -2813,6 +3017,8 @@ const App: React.FC = () => {
                       <thead>
                         <tr className="border-b border-slate-800">
                           <th className="text-left p-3 text-slate-500 font-black uppercase">SKU</th>
+                          <th className="text-right p-3 text-slate-500 font-black uppercase">Classification</th>
+                          <th className="text-right p-3 text-slate-500 font-black uppercase">Volume</th>
                           <th className="text-right p-3 text-slate-500 font-black uppercase">Volatility %</th>
                           <th className="text-right p-3 text-slate-500 font-black uppercase">Avg Qty</th>
                           <th className="text-right p-3 text-slate-500 font-black uppercase">Std Dev</th>
@@ -2820,19 +3026,503 @@ const App: React.FC = () => {
                         </tr>
                       </thead>
                       <tbody>
-                        {volatilityResults.map((item, i) => (
-                          <tr key={i} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-all">
-                            <td className="p-3 text-slate-300 font-bold">{item.sku}</td>
-                            <td className="text-right p-3 text-slate-300">{item.volatility.toFixed(2)}%</td>
-                            <td className="text-right p-3 text-slate-400">{formatNumber(item.avgQuantity)}</td>
-                            <td className="text-right p-3 text-slate-400">{formatNumber(item.stdDev)}</td>
-                            <td className="text-center p-3">
-                              <span className={`px-2 py-1 rounded-full text-[8px] font-black uppercase ${item.volatility > 50 ? 'bg-red-500/20 text-red-400' : item.volatility > 30 ? 'bg-orange-500/20 text-orange-400' : 'bg-indigo-500/20 text-indigo-400'}`}>
-                                {item.volatility > 50 ? 'High' : item.volatility > 30 ? 'Medium' : 'Low'}
-                              </span>
-                            </td>
+                        {volatilityResults.map((item, i) => {
+                          const paretoItem = paretoResults.find(p => p.sku === item.sku);
+                          const classification = paretoItem?.grade || 'N/A';
+                          const volume = paretoItem?.totalVolume || 0;
+                          return (
+                            <tr key={i} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-all">
+                              <td className="p-3 text-slate-300 font-bold">{item.sku}</td>
+                              <td className="text-right p-3">
+                                <span className={`px-2 py-1 rounded-full text-[8px] font-black uppercase ${classification === 'A' ? 'bg-indigo-500/20 text-indigo-400' : classification === 'B' ? 'bg-orange-500/20 text-orange-400' : 'bg-slate-500/20 text-slate-400'}`}>
+                                  Class {classification}
+                                </span>
+                              </td>
+                              <td className="text-right p-3 text-slate-400">{formatNumber(volume)}</td>
+                              <td className="text-right p-3 text-slate-300">{item.volatility.toFixed(2)}%</td>
+                              <td className="text-right p-3 text-slate-400">{formatNumber(item.avgQuantity)}</td>
+                              <td className="text-right p-3 text-slate-400">{formatNumber(item.stdDev)}</td>
+                              <td className="text-center p-3">
+                                <span className={`px-2 py-1 rounded-full text-[8px] font-black uppercase ${item.volatility > 50 ? 'bg-red-500/20 text-red-400' : item.volatility > 30 ? 'bg-orange-500/20 text-orange-400' : 'bg-indigo-500/20 text-indigo-400'}`}>
+                                  {item.volatility > 50 ? 'High' : item.volatility > 30 ? 'Medium' : 'Low'}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+                {/* Portfolio Mix Changes - Historical vs Forecast */}
+                <section className="bg-slate-900 p-6 rounded-[2.5rem] border border-slate-800 shadow-2xl">
+                  <h3 className="text-sm font-black text-white uppercase tracking-widest mb-2">Portfolio Mix Changes</h3>
+                  <p className="text-[10px] text-slate-400 mb-6 font-medium">Historical vs Forecast - SKUs that will shift in classification or volatility profile</p>
+                  {portfolioChanges.length === 0 ? (
+                    <div className="text-slate-400 text-xs italic py-8 text-center">No significant changes between historical and forecast portfolios</div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-[9px]">
+                        <thead>
+                          <tr className="border-b border-slate-800">
+                            <th className="text-left p-3 text-slate-500 font-black uppercase">SKU</th>
+                            <th className="text-center p-3 text-slate-500 font-black uppercase">ABC Change</th>
+                            <th className="text-center p-3 text-slate-500 font-black uppercase">Volatility Risk Change</th>
+                            <th className="text-left p-3 text-slate-500 font-black uppercase">Impact</th>
                           </tr>
-                        ))}
+                        </thead>
+                        <tbody>
+                          {portfolioChanges.map((change, i) => {
+                            const isClassDowngrade = (change.historicalClass === 'A' && change.forecastClass === 'B') || 
+                                                     (change.historicalClass === 'A' && change.forecastClass === 'C') || 
+                                                     (change.historicalClass === 'B' && change.forecastClass === 'C');
+                            const isClassUpgrade = (change.historicalClass === 'B' && change.forecastClass === 'A') || 
+                                                   (change.historicalClass === 'C' && change.forecastClass === 'A') || 
+                                                   (change.historicalClass === 'C' && change.forecastClass === 'B');
+                            const isVolatilityWorse = ['Low', 'Medium'].includes(change.historicalVolatilityRisk) && change.forecastVolatilityRisk === 'High';
+                            
+                            return (
+                              <tr key={i} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-all">
+                                <td className="p-3 text-slate-300 font-bold">{change.sku}</td>
+                                <td className="text-center p-3">
+                                  {change.classChange !== 'No change' ? (
+                                    <span className={`px-2 py-1 rounded-full text-[8px] font-black uppercase inline-block ${isClassDowngrade ? 'bg-red-500/20 text-red-400' : isClassUpgrade ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-500/20 text-slate-400'}`}>
+                                      {change.classChange}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-500 text-[8px]">-</span>
+                                  )}
+                                </td>
+                                <td className="text-center p-3">
+                                  {change.volatilityChange !== 'No change' ? (
+                                    <span className={`px-2 py-1 rounded-full text-[8px] font-black uppercase inline-block ${isVolatilityWorse ? 'bg-red-500/20 text-red-400' : 'bg-orange-500/20 text-orange-400'}`}>
+                                      {change.volatilityChange}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-500 text-[8px]">-</span>
+                                  )}
+                                </td>
+                                <td className="p-3 text-slate-400 text-[8px]">
+                                  {isClassDowngrade && 'Priority decrease - reduce safety stock'}
+                                  {isClassUpgrade && 'Priority increase - boost planning'}
+                                  {isVolatilityWorse && !isClassDowngrade && !isClassUpgrade && 'Increased volatility expected - monitor closely'}
+                                  {!isClassDowngrade && !isClassUpgrade && !isVolatilityWorse && 'Risk profile change'}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </section>
+              </div>
+            )}
+
+            {activeTab === 'sandbox' && (
+              <div className="space-y-6">
+                {/* Analysis Period Memo */}
+                <section className="bg-gradient-to-r from-slate-950 to-slate-900 p-6 rounded-[2.5rem] border border-slate-700 shadow-2xl">
+                  <div className="flex items-start gap-4">
+                    <div className="p-3 bg-blue-500/10 rounded-xl border border-blue-500/20">
+                      <Calendar size={20} className="text-blue-400" />
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="text-sm font-black text-white uppercase tracking-widest mb-4">Analysis Period</h3>
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Historical Data Window</p>
+                          <p className="text-sm text-slate-200">
+                            <span className="text-blue-400 font-bold">{new Date(new Date(historicalDataEndDate).getTime() - committedSettings.horizon * 30.44 * 24 * 60 * 60 * 1000).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</span>
+                            <span className="text-slate-500 mx-2">→</span>
+                            <span className="text-blue-400 font-bold">{new Date(historicalDataEndDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</span>
+                          </p>
+                          <p className="text-[9px] text-slate-500">({committedSettings.horizon} months) • Basis for volatility calculations</p>
+                        </div>
+                        <div className="space-y-2">
+                          <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Forecast Period</p>
+                          <p className="text-sm text-slate-200">
+                            <span className="text-emerald-400 font-bold">{new Date(forecastStartMonth).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</span>
+                            <span className="text-slate-500 mx-2">→</span>
+                            <span className="text-emerald-400 font-bold">{new Date(new Date(forecastStartMonth).getTime() + committedSettings.horizon * 30.44 * 24 * 60 * 60 * 1000).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</span>
+                          </p>
+                          <p className="text-[9px] text-slate-500">({committedSettings.horizon} months) • Forecast horizon</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                {/* Portfolio Transformation Matrix */}
+                <section className="bg-slate-900 p-6 rounded-[2.5rem] border border-slate-800 shadow-2xl">
+                  <h3 className="text-sm font-black text-white uppercase tracking-widest mb-6">ABC Analysis - Portfolio Transformation</h3>
+                  {/* Reorganized Portfolio Matrix: Charts on top, Counts below */}
+                  <div className="grid grid-cols-3 gap-4">
+                    {/* Historical Column */}
+                    <div className="space-y-4">
+                      {/* Historical Title - Centered */}
+                      <h4 className="text-[11px] font-black text-white uppercase tracking-widest text-center">Historical</h4>
+                      
+                      {/* Historical Stacked Chart */}
+                      <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
+                        <ResponsiveContainer width="100%" height={220}>
+                          <ComposedChart data={[
+                            {
+                              period: 'Volume',
+                              A: paretoResults.filter(p => p.grade === 'A').reduce((sum, p) => sum + (p.totalVolume || 0), 0),
+                              B: paretoResults.filter(p => p.grade === 'B').reduce((sum, p) => sum + (p.totalVolume || 0), 0),
+                              C: paretoResults.filter(p => p.grade === 'C').reduce((sum, p) => sum + (p.totalVolume || 0), 0)
+                            }
+                          ]}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                            <XAxis dataKey="period" stroke="#ffffff" tick={{fontSize: 11, fontWeight: 'bold'}} />
+                            <YAxis stroke="#ffffff" tick={{fontSize: 10, fontWeight: 'bold', fill: '#ffffff'}} tickFormatter={(value) => {
+                              return value >= 1000000 ? `${(value / 1000000).toFixed(0)}M` : value >= 1000 ? `${(value / 1000).toFixed(0)}K` : value.toString();
+                            }} />
+                            <Tooltip 
+                              contentStyle={{backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '6px', padding: '8px'}}
+                              labelStyle={{color: '#ffffff', fontSize: '10px', fontWeight: 'bold'}}
+                              content={({ active, payload }: any) => {
+                                if (active && payload && payload.length > 0) {
+                                  const data = payload[0].payload;
+                                  const total = (data.A || 0) + (data.B || 0) + (data.C || 0);
+                                  return (
+                                    <div className="bg-slate-950 border border-slate-700 rounded p-2 text-[9px] space-y-1">
+                                      <div className="text-slate-300 font-bold mb-1">Volume Breakdown:</div>
+                                      {['A', 'B', 'C'].map(cls => {
+                                        const value = data[cls] || 0;
+                                        const percent = total > 0 ? ((value / total) * 100).toFixed(1) : '0';
+                                        const color = cls === 'A' ? '#6366f1' : cls === 'B' ? '#fb923c' : '#475569';
+                                        return (
+                                          <div key={cls} style={{color}}>
+                                            Class {cls}: {formatNumber(value)} ({percent}%)
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  );
+                                }
+                                return null;
+                              }}
+                            />
+                            <Legend wrapperStyle={{fontSize: '10px', fontWeight: 'bold'}} />
+                            <Bar dataKey="A" stackId="volume" fill="#6366f1" name="Class A" radius={[8, 8, 0, 0]} />
+                            <Bar dataKey="B" stackId="volume" fill="#fb923c" name="Class B" />
+                            <Bar dataKey="C" stackId="volume" fill="#475569" name="Class C" />
+                          </ComposedChart>
+                        </ResponsiveContainer>
+                      </div>
+
+                      {/* Historical Counts */}
+                      <div className="bg-slate-950 p-6 rounded-xl border border-slate-800">
+                        <div className="space-y-4">
+                          {['A', 'B', 'C'].map(grade => {
+                            const count = paretoResults.filter(p => p.grade === grade).length;
+                            const volume = paretoResults.filter(p => p.grade === grade).reduce((sum, p) => sum + (p.totalVolume || 0), 0);
+                            const color = grade === 'A' ? '#6366f1' : grade === 'B' ? '#fb923c' : '#475569';
+                            return (
+                              <div key={grade} className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-6 h-6 rounded" style={{backgroundColor: color}} />
+                                  <div>
+                                    <p className="text-[12px] font-black text-white">Class {grade}</p>
+                                    <p className="text-[9px] text-slate-400">{formatNumber(volume)}</p>
+                                  </div>
+                                </div>
+                                <span className="text-[16px] font-black text-white">{count}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Category Shifts Column - Centered & Expanded */}
+                    <div className="flex flex-col items-center h-full">
+                      <div className="bg-slate-950 p-6 rounded-xl border border-slate-800 w-full h-full flex flex-col">
+                        <h4 className="text-[11px] font-black text-white uppercase tracking-widest text-center mb-5">Category Shifts</h4>
+                        <div className="space-y-4 flex-1 flex flex-col justify-start">
+                          {transformationMatrix.length === 0 ? (
+                            <p className="text-[10px] text-slate-500 italic text-center">No category changes</p>
+                          ) : (
+                            transformationMatrix.map((shift, idx) => (
+                              <div key={idx} className="bg-slate-900 p-4 rounded-lg border border-slate-700 group relative cursor-help">
+                                <div className="flex items-center justify-center mb-2">
+                                  <span className="text-[10px] font-bold text-slate-300 flex items-center gap-2">
+                                    <span className={`flex items-center justify-center w-9 h-9 rounded text-[13px] font-black ${shift.from === 'A' ? 'bg-indigo-600' : shift.from === 'B' ? 'bg-orange-600' : 'bg-slate-600'}`}>{shift.from}</span>
+                                    <span className="text-[18px] leading-none">→</span>
+                                    <span className={`flex items-center justify-center w-9 h-9 rounded text-[13px] font-black ${shift.to === 'A' ? 'bg-indigo-600' : shift.to === 'B' ? 'bg-orange-600' : 'bg-slate-600'}`}>{shift.to}</span>
+                                  </span>
+                                </div>
+                                <p className="text-[12px] font-black text-indigo-400 text-center">{shift.count} SKU{shift.count !== 1 ? 's' : ''}</p>
+                                {/* Tooltip */}
+                                <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-slate-950 border border-slate-700 rounded text-[9px] text-slate-300 whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-10">
+                                  Volume: {shift.volumeShift > 0 ? '+' : ''}{formatNumber(shift.volumeShift)}
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Forecasted Column */}
+                    <div className="space-y-4">
+                      {/* Forecasted Title - Centered */}
+                      <h4 className="text-[11px] font-black text-white uppercase tracking-widest text-center">Forecasted</h4>
+                      
+                      {/* Forecasted Stacked Chart */}
+                      <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
+                        <ResponsiveContainer width="100%" height={220}>
+                          <ComposedChart data={[
+                            {
+                              period: 'Volume',
+                              A: forecastParetoResults.filter(p => p.grade === 'A').reduce((sum, p) => sum + (p.totalVolume || 0), 0),
+                              B: forecastParetoResults.filter(p => p.grade === 'B').reduce((sum, p) => sum + (p.totalVolume || 0), 0),
+                              C: forecastParetoResults.filter(p => p.grade === 'C').reduce((sum, p) => sum + (p.totalVolume || 0), 0)
+                            }
+                          ]}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                            <XAxis dataKey="period" stroke="#ffffff" tick={{fontSize: 11, fontWeight: 'bold'}} />
+                            <YAxis stroke="#ffffff" tick={{fontSize: 10, fontWeight: 'bold', fill: '#ffffff'}} tickFormatter={(value) => {
+                              return value >= 1000000 ? `${(value / 1000000).toFixed(0)}M` : value >= 1000 ? `${(value / 1000).toFixed(0)}K` : value.toString();
+                            }} />
+                            <Tooltip 
+                              contentStyle={{backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '6px', padding: '8px'}}
+                              labelStyle={{color: '#ffffff', fontSize: '10px', fontWeight: 'bold'}}
+                              content={({ active, payload }: any) => {
+                                if (active && payload && payload.length > 0) {
+                                  const data = payload[0].payload;
+                                  const total = (data.A || 0) + (data.B || 0) + (data.C || 0);
+                                  return (
+                                    <div className="bg-slate-950 border border-slate-700 rounded p-2 text-[9px] space-y-1">
+                                      <div className="text-slate-300 font-bold mb-1">Volume Breakdown:</div>
+                                      {['A', 'B', 'C'].map(cls => {
+                                        const value = data[cls] || 0;
+                                        const percent = total > 0 ? ((value / total) * 100).toFixed(1) : '0';
+                                        const color = cls === 'A' ? '#6366f1' : cls === 'B' ? '#fb923c' : '#475569';
+                                        return (
+                                          <div key={cls} style={{color}}>
+                                            Class {cls}: {formatNumber(value)} ({percent}%)
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  );
+                                }
+                                return null;
+                              }}
+                            />
+                            <Legend wrapperStyle={{fontSize: '10px', fontWeight: 'bold'}} />
+                            <Bar dataKey="A" stackId="volume" fill="#6366f1" name="Class A" radius={[8, 8, 0, 0]} />
+                            <Bar dataKey="B" stackId="volume" fill="#fb923c" name="Class B" />
+                            <Bar dataKey="C" stackId="volume" fill="#475569" name="Class C" />
+                          </ComposedChart>
+                        </ResponsiveContainer>
+                      </div>
+
+                      {/* Forecasted Counts */}
+                      <div className="bg-slate-950 p-6 rounded-xl border border-slate-800">
+                        <div className="space-y-4">
+                          {['A', 'B', 'C'].map(grade => {
+                            const count = forecastParetoResults.filter(p => p.grade === grade).length;
+                            const volume = forecastParetoResults.filter(p => p.grade === grade).reduce((sum, p) => sum + (p.totalVolume || 0), 0);
+                            const color = grade === 'A' ? '#6366f1' : grade === 'B' ? '#fb923c' : '#475569';
+                            return (
+                              <div key={grade} className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-6 h-6 rounded" style={{backgroundColor: color}} />
+                                  <div>
+                                    <p className="text-[12px] font-black text-white">Class {grade}</p>
+                                    <p className="text-[9px] text-slate-400">{formatNumber(volume)}</p>
+                                  </div>
+                                </div>
+                                <span className="text-[16px] font-black text-white">{count}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                {/* SKU Volatility Comparison - Historical vs Projected */}
+                <section className="bg-slate-900 p-6 rounded-[2.5rem] border border-slate-800 shadow-2xl">
+                  <div className="flex justify-between items-center mb-4">
+                    <div>
+                      <h3 className="text-sm font-black text-white uppercase tracking-widest mb-2">SKU Volatility Analysis</h3>
+                      <p className="text-[10px] text-slate-400 font-medium">Coefficient of Variation - Historic vs Projected demand patterns</p>
+                    </div>
+                    <button onClick={() => setVolatilityChartZoom({ startIndex: 0, endIndex: Math.min(7, volatilityResults.length - 1) })} className="px-3 py-1.5 bg-slate-800 border border-slate-700 text-slate-400 rounded-lg text-[8px] font-black uppercase tracking-widest hover:bg-slate-700 hover:text-slate-300 transition-all">Reset Zoom</button>
+                  </div>
+                  {volatilityResults.length > 0 && (
+                    <div className="bg-slate-800/50 p-4 rounded-xl mb-4 border border-slate-700/50">
+                      <div className="flex items-center justify-between gap-2 mb-3">
+                        <label className="text-[9px] font-black uppercase text-slate-400 tracking-widest">Zoom Range</label>
+                        <span className="text-[8px] text-slate-500">{volatilityChartZoom.startIndex + 1} - {Math.min(volatilityChartZoom.endIndex + 1, volatilityResults.length)} of {volatilityResults.length} SKUs</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <input 
+                          type="range" 
+                          min="0" 
+                          max={Math.max(0, volatilityResults.length - 1)} 
+                          value={volatilityChartZoom.startIndex} 
+                          onChange={(e) => {
+                            const newStart = parseInt(e.target.value);
+                            setVolatilityChartZoom(prev => ({ startIndex: newStart, endIndex: Math.max(newStart + 7, prev.endIndex) }));
+                          }} 
+                          className="flex-1 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500" 
+                        />
+                        <input 
+                          type="range" 
+                          min="0" 
+                          max={Math.max(0, volatilityResults.length - 1)} 
+                          value={volatilityChartZoom.endIndex} 
+                          onChange={(e) => {
+                            const newEnd = parseInt(e.target.value);
+                            setVolatilityChartZoom(prev => ({ startIndex: Math.max(0, Math.min(newEnd - 7, prev.startIndex)), endIndex: newEnd }));
+                          }} 
+                          className="flex-1 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500" 
+                        />
+                      </div>
+                    </div>
+                  )}
+                  <div className="h-[400px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart 
+                        data={volatilityResults.slice(volatilityChartZoom.startIndex, volatilityChartZoom.endIndex + 1).map(item => {
+                          const forecastItem = forecastVolatilityResults.find(f => f.sku === item.sku);
+                          return {
+                            sku: item.sku,
+                            Historic: item.volatility,
+                            Projected: forecastItem?.volatility || 0
+                          };
+                        })}
+                        layout="vertical"
+                        barGap="20%"
+                        barCategoryGap="30%"
+                      >
+                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#1e293b" />
+                        <XAxis type="number" tickFormatter={(val) => `${val.toFixed(0)}%`} tick={{fontSize: 12, fill: '#ffffff', fontWeight: 'bold'}} />
+                        <YAxis dataKey="sku" type="category" width={60} tick={{fontSize: 12, fill: '#ffffff', fontWeight: 'bold'}} />
+                        <Tooltip 
+                          content={(props: any) => {
+                            if (!props.active || !props.payload || !props.payload.length) return null;
+                            const payload = props.payload[0]?.payload;
+                            if (!payload) return null;
+                            return (
+                              <div className="bg-slate-950 border border-slate-700 p-3 rounded-lg text-xs space-y-1">
+                                <p className="text-white font-bold mb-2">{payload.sku}</p>
+                                <p className="text-slate-400">Historic Volatility: <span className="text-blue-400 font-bold">{payload.Historic.toFixed(2)}%</span></p>
+                                <p className="text-slate-400">Projected Volatility: <span className="text-red-400 font-bold">{payload.Projected.toFixed(2)}%</span></p>
+                                <p className="text-slate-400">Change: <span className={`font-bold ${payload.Projected > payload.Historic ? 'text-red-400' : 'text-emerald-400'}`}>{(payload.Projected - payload.Historic).toFixed(2)}%</span></p>
+                              </div>
+                            );
+                          }}
+                        />
+                        <Bar dataKey="Historic" fill="#3b82f6" name="Historic" />
+                        <Bar dataKey="Projected" fill="#ef4444" name="Projected" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </section>
+
+                {/* Consolidated Volatility & Portfolio Mix Table */}
+                <section className="bg-slate-900 p-6 rounded-[2.5rem] border border-slate-800 shadow-2xl">
+                  <div className="flex justify-between items-center mb-6">
+                    <div>
+                      <h3 className="text-sm font-black text-white uppercase tracking-widest mb-2">SKU Analysis - Volatility & Portfolio Mix</h3>
+                      <p className="text-[10px] text-slate-400 font-medium">Consolidated view of volatility rankings with portfolio transformation insights</p>
+                    </div>
+                    <button 
+                      onClick={() => {
+                        const headers = ['SKU', 'ABC Class', 'Volatility %', 'Risk', 'ABC Change', 'Volatility Change'];
+                        const rows = volatilityResults.map(item => {
+                          const paretoItem = paretoResults.find(p => p.sku === item.sku);
+                          const portChange = portfolioChanges.find(p => p.sku === item.sku);
+                          return [
+                            item.sku,
+                            paretoItem?.grade || 'N/A',
+                            item.volatility.toFixed(2),
+                            item.volatility > 50 ? 'High' : item.volatility > 30 ? 'Medium' : 'Low',
+                            portChange?.classChange || 'No change',
+                            portChange?.volatilityChange || 'No change'
+                          ];
+                        });
+                        const csvContent = [headers, ...rows].map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
+                        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                        const link = document.createElement('a');
+                        link.href = URL.createObjectURL(blob);
+                        link.download = `sku-volatility-portfolio-mix-${new Date().toISOString().split('T')[0]}.csv`;
+                        link.click();
+                      }}
+                      className="px-4 py-2 bg-emerald-600 border border-emerald-500 text-white rounded-lg text-[8px] font-black uppercase tracking-widest hover:bg-emerald-700 transition-all"
+                    >
+                      Export CSV
+                    </button>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[9px]">
+                      <thead>
+                        <tr className="border-b border-slate-800">
+                          <th className="text-left p-3 text-slate-500 font-black uppercase">SKU</th>
+                          <th className="text-right p-3 text-slate-500 font-black uppercase">ABC</th>
+                          <th className="text-right p-3 text-slate-500 font-black uppercase">Volatility %</th>
+                          <th className="text-center p-3 text-slate-500 font-black uppercase">Risk</th>
+                          <th className="text-center p-3 text-slate-500 font-black uppercase">ABC Change</th>
+                          <th className="text-center p-3 text-slate-500 font-black uppercase">Volatility Change</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {volatilityResults.map((item, i) => {
+                          const paretoItem = paretoResults.find(p => p.sku === item.sku);
+                          const portChange = portfolioChanges.find(p => p.sku === item.sku);
+                          const classification = paretoItem?.grade || 'N/A';
+                          const isClassDowngrade = portChange && ((portChange.historicalClass === 'A' && portChange.forecastClass === 'B') || 
+                                                   (portChange.historicalClass === 'A' && portChange.forecastClass === 'C') || 
+                                                   (portChange.historicalClass === 'B' && portChange.forecastClass === 'C'));
+                          const isClassUpgrade = portChange && ((portChange.historicalClass === 'B' && portChange.forecastClass === 'A') || 
+                                                   (portChange.historicalClass === 'C' && portChange.forecastClass === 'A') || 
+                                                   (portChange.historicalClass === 'C' && portChange.forecastClass === 'B'));
+                          const isVolatilityWorse = portChange && ['Low', 'Medium'].includes(portChange.historicalVolatilityRisk) && portChange.forecastVolatilityRisk === 'High';
+                          
+                          return (
+                            <tr key={i} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-all">
+                              <td className="p-3 text-slate-300 font-bold">{item.sku}</td>
+                              <td className="text-right p-3">
+                                <span className={`px-2 py-1 rounded-full text-[8px] font-black uppercase ${classification === 'A' ? 'bg-indigo-500/20 text-indigo-400' : classification === 'B' ? 'bg-orange-500/20 text-orange-400' : 'bg-slate-500/20 text-slate-400'}`}>
+                                  {classification}
+                                </span>
+                              </td>
+                              <td className="text-right p-3 text-slate-300 font-bold">{item.volatility.toFixed(2)}%</td>
+                              <td className="text-center p-3">
+                                <span className={`px-2 py-1 rounded-full text-[8px] font-black uppercase ${item.volatility > 50 ? 'bg-red-500/20 text-red-400' : item.volatility > 30 ? 'bg-orange-500/20 text-orange-400' : 'bg-indigo-500/20 text-indigo-400'}`}>
+                                  {item.volatility > 50 ? 'High' : item.volatility > 30 ? 'Medium' : 'Low'}
+                                </span>
+                              </td>
+                              <td className="text-center p-3">
+                                {portChange?.classChange && portChange.classChange !== 'No change' ? (
+                                  <span className={`px-2 py-1 rounded-full text-[8px] font-black uppercase ${isClassDowngrade ? 'bg-red-500/20 text-red-400' : isClassUpgrade ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-500/20 text-slate-400'}`}>
+                                    {portChange.classChange}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-500 text-[8px]">-</span>
+                                )}
+                              </td>
+                              <td className="text-center p-3">
+                                {portChange?.volatilityChange && portChange.volatilityChange !== 'No change' ? (
+                                  <span className={`px-2 py-1 rounded-full text-[8px] font-black uppercase ${isVolatilityWorse ? 'bg-red-500/20 text-red-400' : 'bg-orange-500/20 text-orange-400'}`}>
+                                    {portChange.volatilityChange}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-500 text-[8px]">-</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -2842,7 +3532,7 @@ const App: React.FC = () => {
           </div>
         )}
         
-        <ChatAgent provider={committedSettings.filters.aiProvider} audience={committedSettings.audience} context={dashboardContext} hasRunAnalysis={committedSettings.triggerToken} />
+        <ChatAgent provider={committedSettings.filters.aiProvider} audience={committedSettings.audience} context={{}} hasRunAnalysis={committedSettings.triggerToken} />
         <ReportModal isOpen={isReportOpen} onClose={() => setIsReportOpen(false)} data={reportData} isLoading={isReportLoading} />
         <SchemaModal isOpen={isSchemaModalOpen} onClose={() => setIsSchemaModalOpen(false)} />
       </main>

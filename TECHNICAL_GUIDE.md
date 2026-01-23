@@ -103,9 +103,51 @@ Tailors the summary based on the selected **Audience Type**:
 
 ## 4. UI Architecture
 
+### Main Tabs
+- **Future**: Demand forecasting with method comparison and anomaly detection
+- **Financials**: Cost analysis, scenario modeling, and production plan integration
+- **Quality**: Forecast accuracy metrics and backtesting results
+- **Inventory**: Safety stock and depletion projections with alert generation
+- **Sandbox**: Consolidated analytics hub combining ABC portfolio analysis with volatility metrics
+
+### Sandbox Page - Consolidated Analysis Hub
+The Sandbox tab consolidates portfolio and volatility insights into a single unified view:
+
+#### 1. **Analysis Period Memo Section**
+- Displays historical data window (basis for volatility calculations)
+- Shows forecast period duration with date ranges
+- Located at top of Sandbox for context setting
+
+#### 2. **ABC Analysis - Portfolio Transformation Matrix** (3-Column Layout)
+- **Historical Column**: Stacked bar chart showing current ABC volume distribution with SKU counts
+- **Category Shifts Column**: Centered badges showing classification changes (A→B, B→C transitions) with arrow indicators
+- **Forecasted Column**: Stacked bar chart showing projected ABC distribution with SKU counts
+- Custom tooltips show "Volume Breakdown:" with Class A/B/C volumes and percentages
+- Colors: Indigo (#6366f1) for Class A, Orange (#fb923c) for Class B, Slate (#475569) for Class C
+- Stacked charts use flat rectangular bars (no rounded corners)
+
+#### 3. **SKU Volatility Chart**
+- Horizontal bar chart comparing Historic vs. Projected demand volatility
+- Top 15 SKUs displayed by default with downsampling support
+- Color-coded by volatility risk: Blue for historic, Red for projected
+- Custom tooltip shows Historic Volatility %, Projected Volatility %, and Change direction
+- Located directly below Portfolio Transformation section
+
+#### 4. **Consolidated Volatility & Portfolio Mix Table**
+- **6 Columns**: SKU | ABC | Volatility % | Risk | ABC Change | Volatility Change
+- **Sortable rows** with hover effects for better UX
+- **Color-Coded Badges**:
+  - ABC: Indigo/Orange/Slate with semi-transparent background (500/20)
+  - Risk: Red for High (>50%), Orange for Medium (30-50%), Indigo for Low (<30%)
+  - Changes: Red for downgrades/increases, Green for upgrades/improvements
+- **CSV Export Button**: Top-right, generates file named `sku-volatility-portfolio-mix-YYYY-MM-DD.csv`
+- Integrates volatilityResults, paretoResults, and portfolioChanges data sources
+
+### Component Features
 - **Portal-based Tooltips**: Custom `InfoTooltip` uses React Portals to prevent clipping in the sidebar and implements a "hover bridge" to eliminate flickering.
 - **Multi-Searchable Selects**: Custom dropdowns with fuzzy-matching for handling high-cardinality SKU lists.
 - **Presentation Mode**: The `ReportModal` uses CSS `@media print` overrides to generate a pixel-perfect "One-Pager Executive Memo" as a high-fidelity slide.
+- **Custom Chart Tooltips**: All Recharts components use custom content prop with percentage breakdowns and color-coded data
 
 ## 5. Environment Variables
 - `process.env.API_KEY`: Mandatory key for Gemini API access.

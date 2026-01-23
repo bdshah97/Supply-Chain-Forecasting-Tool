@@ -62,8 +62,7 @@ export enum ForecastMethodology {
   HOLT_WINTERS = 'Holt-Winters (Triple Exponential)',
   PROPHET = 'Prophet-Inspired (Additive)',
   ARIMA = 'ARIMA (Auto-Regressive)',
-  LINEAR = 'Linear Regression',
-  AGGREGATE_ALLOCATE = 'Aggregate then Allocate (Multi-SKU)'
+  LINEAR = 'Linear Regression'
 }
 
 export enum AiProvider {

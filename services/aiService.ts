@@ -145,6 +145,43 @@ export const getAnomalyAnalysis = async (provider: AiProvider, industry: string,
   }
 };
 
+export const getMethodologyAssessment = async (provider: AiProvider, selectedMethodName: string, selectedMetrics: any, metricsInfo: string) => {
+  try {
+    const instruction = `You are a supply chain analytics expert providing executive-level insights on forecast methodology performance. Based on the following backtest metrics across a 6-month validation window, provide a concise narrative assessment.
+
+METHODOLOGY COMPARISON:
+${metricsInfo}
+
+SELECTED METHODOLOGY: ${selectedMethodName}
+- Accuracy: ${selectedMetrics?.accuracy.toFixed(1) || 'N/A'}%
+- MAPE: ${selectedMetrics?.mape.toFixed(1) || 'N/A'}% (Mean Absolute Percentage Error - measures average forecast error as % of actual)
+- RMSE: ${selectedMetrics?.rmse.toFixed(0) || 'N/A'} (Root Mean Square Error - penalizes large deviations more heavily)
+- Bias: ${selectedMetrics?.bias.toFixed(1) || 'N/A'}% (positive = over-forecasting, negative = under-forecasting)
+
+Provide a 3-4 sentence narrative that:
+1. Explains briefly how the selected methodology works
+2. Assesses its performance in this validation window vs alternatives
+3. Highlights any concerns (e.g., bias direction, MAPE threshold, consistency across SKUs)
+4. Compares key strengths against competing methodologies
+
+Keep it technical but accessible. Do not include targets or recommendations.`;
+
+    if (provider === AiProvider.OPENAI) return await callOpenAI(instruction, "");
+    if (provider === AiProvider.CLAUDE) return await callClaude(instruction, "");
+
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: instruction,
+      config: { temperature: 0.7 }
+    });
+    return response.text;
+  } catch (error) {
+    console.error("Methodology assessment error:", error);
+    return "Methodology assessment currently unavailable.";
+  }
+};
+
 export const getNarrativeSummary = async (
   provider: AiProvider, 
   prompt: string, 

@@ -13,11 +13,14 @@ An AI-powered predictive supply chain management platform with demand forecastin
 - **Production Plan Integration**: Upload finished goods production orders or open purchase orders to factor into inventory projections
 - **Inventory Alerts**: Automatic detection of stockout risks and safety stock breaches with export capability
 - **Market Disruption Modeling**: Inject demand shocks (promotions, supply chain events) to stress-test forecasts
-- **SKU Volatility Analysis**: Coefficient of Variation (CV) ranking to identify unpredictable products
-- **ABC Pareto Analysis**: Automatic segmentation of SKUs by volume (Class A/B/C priority)
+- **Sandbox Analysis Hub**: Consolidated analytics page combining ABC portfolio analysis with volatility metrics
+  - **Portfolio Transformation Matrix**: 3-column visualization (Historical | Category Shifts | Forecasted) showing ABC distribution changes
+  - **SKU Volatility Chart**: Interactive bar chart comparing historic vs. projected demand patterns
+  - **Consolidated SKU Analysis Table**: 6-column table with volatility rankings, risk levels, ABC classification changes, and CSV export
+- **ABC Pareto Analysis**: Automatic segmentation of SKUs by volume (Class A/B/C priority) with custom tooltips
 - **Multi-AI Support**: Leverage Claude 3.5, OpenAI GPT-4o, or Gemini for industry-specific insights
 - **Role-Based Insights**: Tailored recommendations for Plant Managers, Demand Planners, Sales, and Executives
-- **Bulk Export**: Export all SKU forecasts in one consolidated CSV
+- **Bulk Export**: Export all SKU forecasts, volatility rankings, and portfolio analysis in one consolidated CSV
 
 ## Run Locally
 
@@ -108,11 +111,13 @@ Export alerts as CSV to share with planning and procurement teams.
 4. Apply market disruptions (e.g., -25% demand shock) to stress-test
 5. Export alerts to prepare contingency plans
 
-### Scenario 3: Cross-SKU Analysis
-1. Use Pareto Analysis tab to identify Class A items (critical focus)
-2. Generate Volatility ranking to find unpredictable SKUs
-3. Export bulk CSV for analysis in Excel/Power BI
-4. Adjust replenishment strategies per SKU class
+### Scenario 3: Cross-SKU Analysis (Sandbox Page)
+1. Navigate to **Sandbox** tab for consolidated analysis
+2. View **Portfolio Transformation Matrix** to see how SKU classifications shift from historical to forecasted
+3. Review **SKU Volatility Chart** comparing historic vs. projected demand patterns
+4. Use **Consolidated Analysis Table** to identify high-volatility and at-risk SKUs
+5. Export volatility & portfolio mix data for Excel/Power BI analysis
+6. Adjust replenishment strategies per SKU class and volatility profile
 
 ## Technical Documentation
 
